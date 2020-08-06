@@ -43,6 +43,11 @@ class Timings(
         return result!!
     }
 
+    fun addMeasure(name: String, time /* milliseconds */: Long) {
+        valuesTotal.merge(name, time, Long::plus)
+        invokes.merge(name, 1, Long::plus)
+    }
+
     fun values(): Map<String, Long> {
         val result = LinkedHashMap<String, Long>()
         for ((k, sum) in valuesTotal) {

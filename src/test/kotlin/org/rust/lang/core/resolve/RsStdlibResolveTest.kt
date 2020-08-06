@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.resolve
 
+import org.junit.Ignore
 import org.rust.ExpandMacros
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
@@ -13,6 +14,7 @@ import org.rust.lang.core.macros.MacroExpansionScope
 import org.rust.lang.core.types.infer.TypeInferenceMarks
 import org.rust.stdext.BothEditions
 
+@Ignore  // todo (slow)
 @BothEditions
 @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
 class RsStdlibResolveTest : RsResolveTestBase() {
@@ -559,6 +561,16 @@ class RsStdlibResolveTest : RsResolveTestBase() {
 
         fn foo(v: Vec) {}
                  //^ unresolved
+    """)
+
+    // remove if https://github.com/intellij-rust/intellij-rust/pull/5474 will add similar test
+    fun `test resolve with no_std attribute 2`() = stubOnlyResolve("""
+    //- main.rs
+        #![no_std]
+
+        fn main() {
+            std::env::args();
+        } //^ unresolved
     """)
 
     fun `test resolve std macro with no_std attribute`() = stubOnlyResolve("""

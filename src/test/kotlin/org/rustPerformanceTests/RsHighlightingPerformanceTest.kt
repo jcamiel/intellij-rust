@@ -5,38 +5,49 @@
 
 package org.rustPerformanceTests
 
+import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.RecursionManager
-import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.util.PsiModificationTracker
+import org.apache.commons.lang3.ObjectUtils
 import org.rust.lang.core.macros.MacroExpansionScope
 import org.rust.lang.core.macros.macroExpansionManager
-import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.ext.RsReferenceElement
-import org.rust.lang.core.psi.ext.block
 import org.rust.lang.core.psi.ext.descendantsOfType
+import org.rust.lang.core.psi.rustPsiManager
+import org.rust.lang.core.resolve2.forceBuildDefMapForAllCrates
+import org.rust.lang.core.resolve2.isNewResolveEnabled
+import org.rust.lang.core.resolve2.timesBuildDefMaps
 import org.rust.stdext.Timings
 import org.rust.stdext.repeatBenchmark
+import java.util.concurrent.Executors
+import kotlin.system.measureTimeMillis
 
-
+// todo другое имя ?
 class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
-    // It is a performance test, but we don't want to waste time
-    // measuring CPU performance
+    // It is a performance test, but we don't want to waste time measuring CPU performance
     override fun isPerformanceTest(): Boolean = false
 
-    fun `test highlighting Cargo`() =
-        repeatTest { highlightProjectFile(CARGO, "src/cargo/core/resolver/mod.rs", it) }
+    private val cargoFilePath: String = "src/cargo/core/resolver/mod.rs"
+    fun `test Cargo, measure`() = repeatTest(CARGO, cargoFilePath, ::measureResolveAndHighlight)
+    fun `test Cargo, profile build DefMap`() = repeatBuildDefMaps(CARGO)
+    fun `test Cargo, profile resolve`() = repeatTest(CARGO, cargoFilePath, ::profileResolve)
 
-    fun `test highlighting mysql_async`() =
-        repeatTest { highlightProjectFile(MYSQL_ASYNC, "src/conn/mod.rs", it) }
+    private val mysqlAsyncFilePath1: String = "src/conn/mod.rs"
+    private val mysqlAsyncFilePath2: String = "src/connection_like/mod.rs"
+    fun `test mysql_async, measure 1`() = repeatTest(MYSQL_ASYNC, mysqlAsyncFilePath1, ::measureResolveAndHighlight)
+    fun `test mysql_async, measure 2`() = repeatTest(MYSQL_ASYNC, mysqlAsyncFilePath2, ::measureResolveAndHighlight)
+    fun `test mysql_async, profile resolve`() = repeatBuildDefMaps(MYSQL_ASYNC)
 
-    fun `test highlighting mysql_async 2`() =
-        repeatTest { highlightProjectFile(MYSQL_ASYNC, "src/connection_like/mod.rs", it) }
+    fun `test empty, profile build DefMap`() = repeatBuildDefMaps(EMPTY)
+    fun `test rustc, profile build DefMap`() = repeatBuildDefMaps(RUSTC)
 
-    private fun repeatTest(f: (Timings) -> Unit) {
-        println("${name.substring("test ".length)}:")
+    private fun repeatTest(info: RealProjectInfo, filePath: String, f: (Timings) -> Unit) {
+        println("${name.removePrefix("test ")}:")
         repeatBenchmark {
             val disposable = project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(MacroExpansionScope.ALL, name)
+            openRealProject(info) ?: return@repeatBenchmark
+            myFixture.configureFromTempProjectFile(filePath)
             f(it)
             Disposer.dispose(disposable)
             super.tearDown()
@@ -44,59 +55,81 @@ class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
         }
     }
 
-    private fun highlightProjectFile(info: RealProjectInfo, filePath: String, timings: Timings): Timings {
-        openRealProject(info) ?: return timings
-
-        myFixture.configureFromTempProjectFile(filePath)
-
+    private fun measureResolveAndHighlight(timings: Timings) {
         val modificationCount = currentPsiModificationCount()
+        buildDefMaps(timings)
+        val references = collectReferences(timings)
+        resolveReferences(timings, references)
+        highlight(timings)
+        resolveReferencesCached(references, modificationCount, timings)
+    }
 
-        val refs = timings.measure("collecting") {
-            myFixture.file.descendantsOfType<RsReferenceElement>()
+    private fun repeatBuildDefMaps(info: RealProjectInfo) {
+        println("${name.removePrefix("test ")}:")
+        project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(MacroExpansionScope.ALL, name)
+        openRealProject(info) ?: return
+
+        repeatBenchmark(warmupIterations = 20, iterations = 10000) {
+            it.measure("buildDefMap") {
+                val pool = Executors.newWorkStealingPool()
+                val indicator = EmptyProgressIndicator()
+                forceBuildDefMapForAllCrates(project, pool, indicator, async = false)
+            }
+        }
+    }
+
+    private fun profileResolve(timings: Timings) {
+        val references = collectReferences(timings)
+        val times = mutableListOf<Long>()
+        for (i in 0..Int.MAX_VALUE) {
+            val time = measureTimeMillis {
+                references.forEach { it.reference?.resolve() }
+            }
+            times += time
+
+            val timeMin = times.min()
+            val timeMedian = ObjectUtils.median(*times.toTypedArray())
+            println("Resolved all file references in $time ms  (min = $timeMin ms, median = $timeMedian ms)")
+            project.rustPsiManager.incRustStructureModificationCount()
+        }
+    }
+
+    private fun buildDefMaps(timings: Timings) {
+        if (!project.isNewResolveEnabled) return
+
+        // Actually [CrateDefMap]s are built two times,
+        // in [openRealProject] and [CodeInsightTestFixture.configureFromTempProjectFile]
+        val time = timesBuildDefMaps.last()
+        timesBuildDefMaps.clear()
+        timings.addMeasure("resolve2", time)
+    }
+
+    private fun collectReferences(timings: Timings): Collection<RsReferenceElement> =
+        timings.measure("collecting") {
+            myFixture.file.descendantsOfType()
         }
 
+    private fun resolveReferences(timings: Timings, references: Collection<RsReferenceElement>) =
         timings.measure("resolve") {
-            refs.forEach { it.reference?.resolve() }
+            references.forEach { it.reference?.resolve() }
         }
+
+    private fun highlight(timings: Timings) =
         timings.measure("highlighting") {
             myFixture.doHighlighting()
         }
 
-        check(modificationCount == currentPsiModificationCount()) {
+    private fun resolveReferencesCached(
+        references: Collection<RsReferenceElement>,
+        oldModificationCount: Long,
+        timings: Timings
+    ) {
+        check(oldModificationCount == currentPsiModificationCount()) {
             "PSI changed during resolve and highlighting, resolve might be double counted"
         }
-
         timings.measure("resolve_cached") {
-            refs.forEach { it.reference?.resolve() }
+            references.forEach { it.reference?.resolve() }
         }
-
-        myFixture.file.descendantsOfType<RsFunction>()
-            .asSequence()
-            .mapNotNull { it.block?.stmtList?.lastOrNull() }
-            .forEach { stmt ->
-                myFixture.editor.caretModel.moveToOffset(stmt.textOffset)
-                myFixture.type("2+2;")
-                PsiDocumentManager.getInstance(project).commitAllDocuments() // process PSI modification events
-
-                timings.measureAverage("resolve_after_typing") {
-                    refs.forEach { it.reference?.resolve() }
-                }
-            }
-
-        myFixture.file.descendantsOfType<RsFunction>()
-            .asSequence()
-            .mapNotNull { it.block?.stmtList?.lastOrNull() }
-            .forEach { stmt ->
-                myFixture.editor.caretModel.moveToOffset(stmt.textOffset)
-                // replace to `myFixture.type("Hash;")` to make it 10x slower
-                myFixture.type("HashMa;")
-                myFixture.editor.caretModel.moveCaretRelatively(-1, 0, false, false, false)
-                timings.measureAverage("completion") {
-                    myFixture.completeBasic()
-                }
-            }
-
-        return timings
     }
 
     private fun currentPsiModificationCount() =
@@ -115,4 +148,3 @@ class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
         Disposer.dispose(lastDisposable)
     }
 }
-

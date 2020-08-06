@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.resolve
 
+import org.junit.Ignore
 import org.rust.MockEdition
 import org.rust.MockRustcVersion
 import org.rust.cargo.project.workspace.CargoWorkspace
@@ -1377,6 +1378,7 @@ class RsResolveTest : RsResolveTestBase() {
                 //^
     """)
 
+    @Ignore  // todo multiresolve
     fun `test extern crate self without alias`() = checkByCode("""
         extern crate self;
 
@@ -1416,6 +1418,20 @@ class RsResolveTest : RsResolveTestBase() {
                     //X
             V([usize; AAA]),
                      //^
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test multiple functions with same name`() = checkByCode("""
+        mod foo {
+            pub fn func() {}
+            pub fn func() {}
+        }
+
+        use foo::func;
+        fn main() {
+            func();
+           //^ unresolved
         }
     """)
 }

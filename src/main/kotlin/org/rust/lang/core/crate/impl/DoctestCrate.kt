@@ -53,7 +53,7 @@ class DoctestCrate(
                 DoctestCrate(parentCrate, doctestModule, dependencies)
             } else {
                 // A doctest located in the stdlib is depending on all stdlib crates
-                val stdCrates = parentCrate.cargoProject.project.crateGraph.topSortedCrates
+                val stdCrates = parentCrate.project.crateGraph.topSortedCrates
                     .filter { it.origin == PackageOrigin.STDLIB }
                     .map { Crate.Dependency(it.normName, it) }
                     .distinctBy { it.normName }

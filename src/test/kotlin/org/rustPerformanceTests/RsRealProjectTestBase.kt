@@ -78,6 +78,7 @@ abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
                 "tmp"
             )
         )
+        val EMPTY = RealProjectInfo("empty", "empty", "https://github.com/todo")
         val CARGO = RealProjectInfo("cargo", "cargo", "https://github.com/rust-lang/cargo")
         val MYSQL_ASYNC = RealProjectInfo("mysql_async", "mysql_async", "https://github.com/blackbeam/mysql_async")
         val TOKIO = RealProjectInfo("tokio", "tokio", "https://github.com/tokio-rs/tokio")

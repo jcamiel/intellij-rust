@@ -38,12 +38,15 @@ class RsProjectConfigurable(
                 @Suppress("WHEN_ENUM_CAN_BE_NULL_IN_JAVA")
                 when (it) {
                     MacroExpansionEngine.DISABLED -> "Disable (select only if you have problems with macro expansion)"
-                    MacroExpansionEngine.OLD -> "Use old engine (some features are not supported) "
+                    MacroExpansionEngine.OLD -> "Use old engine (some features are not supported)"
                     MacroExpansionEngine.NEW -> "Use new engine"
                 }
             }
         }
     private var macroExpansionEngine: MacroExpansionEngine by ComboBoxDelegate(macroExpansionEngineComboBox)
+
+    private val newResolveCheckbox: JBCheckBox = JBCheckBox()
+    private var newResolveEnabled: Boolean by CheckboxDelegate(newResolveCheckbox)
 
     private val doctestInjectionCheckbox: JBCheckBox = JBCheckBox()
     private var doctestInjectionEnabled: Boolean by CheckboxDelegate(doctestInjectionCheckbox)
@@ -56,6 +59,7 @@ class RsProjectConfigurable(
             Allow plugin to process declarative macro invocations
             to extract information for name resolution and type inference.
         """)
+        row("Use experimental name resolution engine:", newResolveCheckbox)
         row("Inject Rust language into documentation comments:", doctestInjectionCheckbox)
     }
 
@@ -80,6 +84,7 @@ class RsProjectConfigurable(
             it.toolchain = rustProjectSettings.data.toolchain
             it.explicitPathToStdlib = rustProjectSettings.data.explicitPathToStdlib
             it.macroExpansionEngine = macroExpansionEngine
+            it.newResolveEnabled = newResolveEnabled
             it.doctestInjectionEnabled = doctestInjectionEnabled
         }
     }
@@ -89,6 +94,7 @@ class RsProjectConfigurable(
         return data.toolchain?.location != settings.toolchain?.location
             || data.explicitPathToStdlib != settings.explicitPathToStdlib
             || macroExpansionEngine != settings.macroExpansionEngine
+            || newResolveEnabled != settings.newResolveEnabled
             || doctestInjectionEnabled != settings.doctestInjectionEnabled
     }
 }

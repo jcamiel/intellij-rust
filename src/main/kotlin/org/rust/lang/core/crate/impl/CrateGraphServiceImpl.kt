@@ -64,7 +64,6 @@ class CrateGraphServiceImpl(val project: Project) : CrateGraphService {
         checkReadAccessAllowed()
         return rootModFile.applyWithSymlink { if (it is VirtualFileWithId) findCrateById(it.id) else null }
     }
-
 }
 
 private data class CrateGraph(

@@ -65,7 +65,7 @@ abstract class RsFileBase(fileViewProvider: FileViewProvider)
         get() = stubChildrenOfType()
 }
 
-class RsFile(
+open class RsFile(
     fileViewProvider: FileViewProvider
 ) : RsFileBase(fileViewProvider), RsMod {
 

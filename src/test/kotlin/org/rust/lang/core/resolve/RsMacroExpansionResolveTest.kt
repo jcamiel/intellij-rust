@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.resolve
 
+import org.junit.Ignore
 import org.rust.ExpandMacros
 import org.rust.MockEdition
 import org.rust.ProjectDescriptor

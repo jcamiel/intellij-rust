@@ -16,10 +16,7 @@ import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapiext.Testmark
 import com.intellij.openapiext.hitOnFalse
 import com.intellij.openapiext.isUnitTestMode
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiManager
-import com.intellij.psi.StubBasedPsiElement
+import com.intellij.psi.*
 import com.intellij.psi.stubs.StubElement
 import com.intellij.psi.util.CachedValue
 import com.intellij.psi.util.CachedValueProvider
@@ -34,6 +31,7 @@ import org.rust.lang.RsConstants
 import org.rust.lang.core.FeatureAvailability
 import org.rust.lang.core.IN_BAND_LIFETIMES
 import org.rust.lang.core.crate.Crate
+import org.rust.lang.core.crate.impl.DoctestCrate
 import org.rust.lang.core.macros.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsFile.Attributes.*
@@ -47,6 +45,8 @@ import org.rust.lang.core.resolve.NameResolutionTestmarks.selfInGroup
 import org.rust.lang.core.resolve.indexes.RsLangItemIndex
 import org.rust.lang.core.resolve.indexes.RsMacroIndex
 import org.rust.lang.core.resolve.ref.*
+import org.rust.lang.core.resolve2.isNewResolveEnabled
+import org.rust.lang.core.resolve2.processMacros
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.types.*
 import org.rust.lang.core.types.consts.CtInferVar
@@ -101,7 +101,7 @@ fun processDotExprResolveVariants(
     lookup: ImplLookup,
     receiverType: Ty,
     context: RsElement,
-    processor: (DotExprResolveVariant) -> Boolean
+    processor: RsResolveProcessorBase<DotExprResolveVariant>
 ): Boolean {
     if (processFieldExprResolveVariants(lookup, receiverType, processor)) return true
     if (processMethodDeclarationsWithDeref(lookup, receiverType, context, processor)) return true
@@ -112,11 +112,14 @@ fun processDotExprResolveVariants(
 fun processFieldExprResolveVariants(
     lookup: ImplLookup,
     receiverType: Ty,
-    processor: (FieldResolveVariant) -> Boolean
+    originalProcessor: RsResolveProcessorBase<FieldResolveVariant>
 ): Boolean {
     for ((i, ty) in lookup.coercionSequence(receiverType).withIndex()) {
         if (ty !is TyAdt || ty.item !is RsStructItem) continue
-        if (processFieldDeclarations(ty.item) { processor(FieldResolveVariant(it.name, it.element!!, ty, i)) }) return true
+        val processor = createProcessor(originalProcessor.name) {
+            originalProcessor(FieldResolveVariant(it.name, it.element!!, ty, i))
+        }
+        if (processFieldDeclarations(ty.item, processor)) return true
     }
 
     return false
@@ -154,6 +157,44 @@ fun processMethodCallExprResolveVariants(
     processMethodDeclarationsWithDeref(lookup, receiverType, context, processor)
 
 /**
+ * This class is needed to reuse [processModDeclResolveVariants] in Resolve2.
+ * Because we can't call `resolve` on [RsModDeclItem] in Resolve2.
+ * (See `RsModDeclItem.resolve` in [org.rust.lang.core.resolve2.ModCollector].)
+ */
+class RsModDeclItemData(
+    val project: Project,
+
+    // todo why both `name` and `referenceName` ?
+    val name: String?,
+    val referenceName: String,
+    val pathAttribute: String?,
+    val isLocal: Boolean,
+
+    val containingModOwnedDirectory: PsiDirectory?,
+    val containingModName: String?,
+    val containingModIsFile: Boolean,
+    val contextualFile: PsiFile,
+    val inCrateRoot: Lazy<Boolean>
+)
+
+fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolveProcessor): Boolean {
+    val containingMod = modDecl.containingMod
+    val data = RsModDeclItemData(
+        project = modDecl.project,
+        name = modDecl.name,
+        referenceName = modDecl.referenceName,
+        isLocal = modDecl.isLocal,
+        pathAttribute = modDecl.pathAttribute,
+        containingModOwnedDirectory = containingMod.getOwnedDirectory(),
+        containingModName = containingMod.modName,
+        containingModIsFile = containingMod is RsFile,
+        contextualFile = modDecl.contextualFile,
+        inCrateRoot = lazy(LazyThreadSafetyMode.NONE) { containingMod.isCrateRoot }
+    )
+    return processModDeclResolveVariants(data, processor)
+}
+
+/**
  * Looks-up file corresponding to particular module designated by `mod-declaration-item`:
  *
  *  ```
@@ -175,22 +216,21 @@ fun processMethodCallExprResolveVariants(
  * Reference:
  *      https://github.com/rust-lang-nursery/reference/blob/master/src/items/modules.md
  */
-fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolveProcessor): Boolean {
-    val psiMgr = PsiManager.getInstance(modDecl.project)
-    val containingMod = modDecl.containingMod
+fun processModDeclResolveVariants(modDeclData: RsModDeclItemData, processor: RsResolveProcessor): Boolean {
+    val psiMgr = PsiManager.getInstance(modDeclData.project)
 
-    val ownedDirectory = containingMod.getOwnedDirectory()
-    val contextualFile = modDecl.contextualFile
+    val ownedDirectory = modDeclData.containingModOwnedDirectory
+    val contextualFile = modDeclData.contextualFile
     val originalFileOriginal = contextualFile.originalFile.virtualFile
     val inModRs = contextualFile.name == RsConstants.MOD_RS_FILE
-    val inCrateRoot = lazy(LazyThreadSafetyMode.NONE) { containingMod.isCrateRoot }
+    val inCrateRoot = modDeclData.inCrateRoot
 
-    val explicitPath = modDecl.pathAttribute
+    val explicitPath = modDeclData.pathAttribute
     if (explicitPath != null) {
         // Explicit path is relative to:
         // * owned directory when module declared in inline module
         // * parent of module declaration otherwise
-        val dir = if (containingMod is RsFile) {
+        val dir = if (modDeclData.containingModIsFile) {
             modDeclExplicitPathInNonInlineModule.hit()
             contextualFile.parent
         } else {
@@ -201,13 +241,13 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
             ?: return false
         val mod = psiMgr.findFile(vFile)?.rustFile ?: return false
 
-        val name = modDecl.name ?: return false
+        val name = modDeclData.name ?: return false
         return processor(name, mod)
     }
     if (ownedDirectory == null) return false
-    if (modDecl.isLocal) return false
+    if (modDeclData.isLocal) return false
 
-    val modDeclName = modDecl.referenceName
+    val modDeclName = modDeclData.referenceName
 
     fun fileName(rawName: String): String {
         val fileName = FileUtil.getNameWithoutExtension(rawName)
@@ -245,7 +285,7 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
             continue
         }
 
-        if (vDir.name == containingMod.modName) {
+        if (vDir.name == modDeclData.containingModName) {
             for (vFile in vDir.children) {
                 if (vFile.isDirectory) continue
                 val rawFileName = vFile.name
@@ -313,7 +353,7 @@ fun findDependencyCrateByNamePath(context: RsElement, path: RsPath): RsFile? {
 
 fun findDependencyCrateByName(context: RsElement, name: String): RsFile? {
     var found: RsFile? = null
-    processExternCrateResolveVariants(context, false) {
+    val processor = createProcessor(name) {
         if (it.name == name) {
             found = it.element as? RsFile
             true
@@ -321,6 +361,7 @@ fun findDependencyCrateByName(context: RsElement, name: String): RsFile? {
             false
         }
     }
+    processExternCrateResolveVariants(context, false, processor)
     return found
 }
 
@@ -625,18 +666,22 @@ private fun processTraitRelativePath(
     return false
 }
 
-fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
+fun processPatBindingResolveVariants(
+    binding: RsPatBinding,
+    isCompletion: Boolean,
+    originalProcessor: RsResolveProcessor
+): Boolean {
     if (binding.parent is RsPatField) {
         val parentPat = binding.parent.parent as RsPatStruct
         val patStruct = parentPat.path.reference?.deepResolve()
         if (patStruct is RsFieldsOwner) {
-            if (processFieldDeclarations(patStruct, processor)) return true
+            if (processFieldDeclarations(patStruct, originalProcessor)) return true
             if (isCompletion) return false
         }
     }
 
-    return processNestedScopesUpwards(binding, if (isCompletion) TYPES_N_VALUES else VALUES) { entry ->
-        processor.lazy(entry.name) {
+    val processor = createProcessor(originalProcessor.name) { entry ->
+        originalProcessor.lazy(entry.name) {
             val element = entry.element ?: return@lazy null
             val isConstant = element.isConstantLike
             val isPathOrDestructable = when (element) {
@@ -646,6 +691,7 @@ fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolea
             if (isConstant || (isCompletion && isPathOrDestructable)) element else null
         }
     }
+    return processNestedScopesUpwards(binding, if (isCompletion) TYPES_N_VALUES else VALUES, processor)
 }
 
 fun processLabelResolveVariants(label: RsLabel, processor: RsResolveProcessor): Boolean {
@@ -697,14 +743,15 @@ fun processLifetimeResolveVariants(lifetime: RsLifetime, processor: RsResolvePro
     return false
 }
 
-fun processLocalVariables(place: RsElement, processor: (RsPatBinding) -> Unit) {
+fun processLocalVariables(place: RsElement, originalProcessor: (RsPatBinding) -> Unit) {
     val hygieneFilter = makeHygieneFilter(place)
     walkUp(place, { it is RsItemElement }) { cameFrom, scope ->
-        processLexicalDeclarations(scope, cameFrom, VALUES, hygieneFilter, ItemProcessingMode.WITH_PRIVATE_IMPORTS) { v ->
+        val processor = createProcessor { v ->
             val el = v.element
-            if (el is RsPatBinding) processor(el)
+            if (el is RsPatBinding) originalProcessor(el)
             false
         }
+        processLexicalDeclarations(scope, cameFrom, VALUES, hygieneFilter, ItemProcessingMode.WITH_PRIVATE_IMPORTS, processor)
     }
 }
 
@@ -830,6 +877,7 @@ private fun processMacrosExportedByCrate(crateRoot: RsFile, processor: RsResolve
 
 fun processMacroCallVariantsInScope(context: PsiElement, processor: RsResolveProcessor): Boolean {
     val result = MacroResolver.processMacrosInLexicalOrderUpward(context, processor)
+    if (context.project.isNewResolveEnabled) return result
     if (result) return true
 
     val element = context.contextOrSelf<RsElement>() ?: return false
@@ -838,12 +886,20 @@ fun processMacroCallVariantsInScope(context: PsiElement, processor: RsResolvePro
     return processAllScopeEntries(exportedMacrosAsScopeEntries(prelude), processor)
 }
 
-private class MacroResolver private constructor(private val processor: RsResolveProcessor) : RsVisitor() {
+private class MacroResolver private constructor(
+    private val processor: RsResolveProcessor,
+    private val project: Project
+) : RsVisitor() {
     private val visitor = MacroResolvingVisitor(reverse = true) { processor(it) }
 
     private fun processMacrosInLexicalOrderUpward(startElement: PsiElement): Boolean {
-        if (processScopesInLexicalOrderUpward(startElement)) {
-            return true
+        val result = processScopesInLexicalOrderUpward(startElement)
+        if (result == true) return true
+
+        // `startElement.parent is RsMod` => use `CrateDefMap` if new resolve is enabled
+        if (project.isNewResolveEnabled && startElement.contextOrSelf<RsElement>()?.containingCrate !is DoctestCrate) {
+            check(result == null) { "we must encounter RsMod while processing scopes upward" }
+            return false
         }
 
         if (processRemainedExportedMacros()) return true
@@ -857,8 +913,12 @@ private class MacroResolver private constructor(private val processor: RsResolve
      * In short, it processes left siblings, then left siblings of the parent (without parent itself) and so on
      * until root (file), then it goes up to module declaration of the file (`mod foo;`) and processes its
      * siblings, and so on until crate root
+     *
+     * `null` return value means `false` with additional information that:
+     * - new resolve engine is enabled
+     * - we should stop any further processing
      */
-    private fun processScopesInLexicalOrderUpward(startElement: PsiElement): Boolean {
+    private fun processScopesInLexicalOrderUpward(startElement: PsiElement): Boolean? {
         val stub = (startElement as? StubBasedPsiElement<*>)?.greenStub
         return if (stub != null) {
             stubBasedProcessScopesInLexicalOrderUpward(stub)
@@ -867,11 +927,7 @@ private class MacroResolver private constructor(private val processor: RsResolve
         }
     }
 
-    private tailrec fun psiBasedProcessScopesInLexicalOrderUpward(element: PsiElement): Boolean {
-        for (e in element.leftSiblings) {
-            if (visitor.processMacros(e)) return true
-        }
-
+    private tailrec fun psiBasedProcessScopesInLexicalOrderUpward(element: PsiElement): Boolean? {
         // ```
         // //- main.rs
         // macro_rules! foo { ... }
@@ -884,6 +940,15 @@ private class MacroResolver private constructor(private val processor: RsResolve
         val expandedFrom = (element as? RsExpandedElement)?.expandedFrom
         if (expandedFrom != null && processExpandedFrom(expandedFrom)) return true
         val context = expandedFrom ?: element.context ?: return false
+
+        if (project.isNewResolveEnabled && context is RsMod && context.containingCrate !is DoctestCrate) {
+            if (processRemainedExportedMacros()) return true  // process local imports
+            return if (processMacros(context, processor)) true else null
+        }
+        for (e in element.leftSiblings) {
+            if (visitor.processMacros(e)) return true
+        }
+
         return when {
             context is RsFile -> processScopesInLexicalOrderUpward(context.declaration ?: return false)
             // Optimization. Let this function be tailrec if go up by real parent (in the same file)
@@ -892,19 +957,26 @@ private class MacroResolver private constructor(private val processor: RsResolve
         }
     }
 
-    private tailrec fun stubBasedProcessScopesInLexicalOrderUpward(element: StubElement<*>): Boolean {
+    private tailrec fun stubBasedProcessScopesInLexicalOrderUpward(element: StubElement<*>): Boolean? {
         val parentStub = element.parentStub ?: return false
         val siblings = parentStub.childrenStubs
         val index = siblings.indexOf(element)
         check(index != -1) { "Can't find stub index" }
         val leftSiblings = siblings.subList(0, index)
-        for (it in leftSiblings) {
-            if (visitor.processMacros(it.psi)) return true
-        }
+
         // See comment in psiBasedProcessScopesInLexicalOrderUpward
         val expandedFrom = (element.psi as? RsExpandedElement)?.expandedFrom
         if (expandedFrom != null && processExpandedFrom(expandedFrom)) return true
         val parentPsi = expandedFrom ?: parentStub.psi
+
+        if (project.isNewResolveEnabled && parentPsi is RsMod && parentPsi.containingCrate !is DoctestCrate) {
+            if (processRemainedExportedMacros()) return true  // process local imports
+            return if (processMacros(parentPsi, processor)) true else null
+        }
+        for (it in leftSiblings) {
+            if (visitor.processMacros(it.psi)) return true
+        }
+
         return when {
             parentPsi is RsFile -> processScopesInLexicalOrderUpward(parentPsi.declaration ?: return false)
             // Optimization. Let this function be tailrec if go up by stub parent
@@ -938,7 +1010,7 @@ private class MacroResolver private constructor(private val processor: RsResolve
 
     companion object {
         fun processMacrosInLexicalOrderUpward(startElement: PsiElement, processor: RsResolveProcessor): Boolean =
-            MacroResolver(processor).processMacrosInLexicalOrderUpward(startElement)
+            MacroResolver(processor, startElement.project).processMacrosInLexicalOrderUpward(startElement)
     }
 }
 
@@ -1299,7 +1371,7 @@ private fun processLexicalDeclarations(
         // Rust allows to defined several bindings in single pattern to the same name,
         // but they all must bind the same variables, hence we can inspect only the first one.
         // See https://github.com/rust-lang/rfcs/blob/master/text/2535-or-patterns.md
-        val patternProcessor: RsResolveProcessor = { e ->
+        val patternProcessor = createProcessor(processor.name) { e ->
             if (e.name !in alreadyProcessedNames) {
                 alreadyProcessedNames += e.name
                 processor(e)
@@ -1375,7 +1447,7 @@ private fun processLexicalDeclarations(
             // ```
             val visited = mutableSetOf<String>()
             if (Namespace.Values in ns) {
-                val shadowingProcessor = { e: ScopeEntry ->
+                val shadowingProcessor = createProcessor(processor.name) { e ->
                     (e.name !in visited) && processor(e).also {
                         if (e.isInitialized && e.element != null) {
                             visited += e.name
@@ -1508,14 +1580,14 @@ private tailrec fun PsiFile.unwrapCodeFragments(): PsiFile {
 
 inline fun processWithShadowingAndUpdateScope(
     prevScope: MutableMap<String, Set<Namespace>>,
-    crossinline processor: RsResolveProcessor,
+    processor: RsResolveProcessor,
     f: (RsResolveProcessor) -> Boolean
 ): Boolean {
     val currScope = mutableMapOf<String, Set<Namespace>>()
-    val shadowingProcessor = lambda@{ e: ScopeEntry ->
+    val shadowingProcessor = createProcessor(processor.name) { e ->
         val prevNs = prevScope[e.name]
         if (prevNs != null && (e.element as? RsNamedElement)?.namespaces?.intersects(prevNs) == true) {
-            return@lambda false
+            return@createProcessor false
         }
         val result = processor(e)
         if (e.isInitialized) {
@@ -1535,13 +1607,15 @@ inline fun processWithShadowingAndUpdateScope(
 
 inline fun processWithShadowing(
     prevScope: Map<String, Set<Namespace>>,
-    crossinline processor: RsResolveProcessor,
+    originalProcessor: RsResolveProcessor,
     f: (RsResolveProcessor) -> Boolean
 ): Boolean {
-    return f { e: ScopeEntry ->
+    val processor = createProcessor(originalProcessor.name) { e ->
         val prevNs = prevScope[e.name]
-        (prevNs == null || (e.element as? RsNamedElement)?.namespaces?.intersects(prevNs) != true) && processor(e)
+        (prevNs == null || (e.element as? RsNamedElement)?.namespaces?.intersects(prevNs) != true)
+            && originalProcessor(e)
     }
+    return f(processor)
 }
 
 fun findPrelude(element: RsElement): RsFile? {

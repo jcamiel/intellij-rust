@@ -153,7 +153,7 @@ class RsMacroResolveTest : RsResolveTestBase() {
             foo_bar!();
             //^ unresolved
         }
-    """, NameResolutionTestmarks.missingMacroUse)
+    """)
 
     fun `test macro_export macro is visible in the same crate without macro_use`() = checkByCode("""
         // #[macro_use] is not needed here
@@ -165,7 +165,7 @@ class RsMacroResolveTest : RsResolveTestBase() {
             foo_bar!();
             //^
         }
-    """, NameResolutionTestmarks.processSelfCrateExportedMacros)
+    """)
 
     fun `test resolve macro missing macro_use mod`() = checkByCode("""
         // Missing #[macro_use] here
@@ -178,7 +178,7 @@ class RsMacroResolveTest : RsResolveTestBase() {
                 //^ unresolved
             }
         }
-    """, NameResolutionTestmarks.missingMacroUse)
+    """)
 
     fun `test raw identifier 1`() = checkByCode("""
         macro_rules! r#match { () => () }

@@ -31,6 +31,7 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.text.SemVer
 import junit.framework.AssertionFailedError
 import org.intellij.lang.annotations.Language
+import org.junit.Ignore
 import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.impl.testCargoProjects
@@ -91,6 +92,10 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
             }
             error("Root directory has been renamed from `$oldTempDirRootUrl` to `$newTempDirRootUrl`; This should not happens")
         }
+    }
+
+    override fun shouldRunTest(): Boolean {
+        return super.shouldRunTest() && findAnnotationInstance<Ignore>() == null
     }
 
     private fun setupMockRustcVersion() {

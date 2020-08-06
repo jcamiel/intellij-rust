@@ -37,7 +37,7 @@ val RsNamedElement.namespaces: Set<Namespace> get() = when (this) {
     is RsConstant -> VALUES
     is RsFunction -> if (this.isProcMacroDef) MACROS else VALUES
 
-    is RsEnumVariant -> if (blockFields == null) VALUES else TYPES
+    is RsEnumVariant -> namespaces
 
     is RsStructItem -> if (blockFields == null) TYPES_N_VALUES else TYPES
 
@@ -47,6 +47,8 @@ val RsNamedElement.namespaces: Set<Namespace> get() = when (this) {
 
     else -> TYPES_N_VALUES
 }
+
+inline val RsEnumVariant.namespaces: Set<Namespace> get() = if (blockFields == null) VALUES else TYPES
 
 val RsUseSpeck.namespaces: Set<Namespace>
     get() = path

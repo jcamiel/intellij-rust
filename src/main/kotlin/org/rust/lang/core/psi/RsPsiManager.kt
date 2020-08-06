@@ -33,6 +33,7 @@ import org.rust.lang.core.psi.RsPsiManager.Companion.isIgnorePsiEvents
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.findModificationTrackerOwner
+import org.rust.lang.core.resolve2.defMapService
 
 /** Don't subscribe directly or via plugin.xml lazy listeners. Use [RsPsiManager.subscribeRustStructureChange] */
 private val RUST_STRUCTURE_CHANGE_TOPIC: Topic<RustStructureChangeListener> = Topic.create(
@@ -123,6 +124,7 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
                 is ChildReplacement.After -> event.newChild
                 is ChildAddition.After -> event.child
                 is ChildMovement.After -> event.child
+                // todo почему else return?
                 is ChildrenChange.After -> if (!event.isGenericChange) event.parent else return
                 is PropertyChange.After -> {
                     when (event.propertyName) {
@@ -201,6 +203,7 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
         if (isStructureModification) {
             incRustStructureModificationCount(file, psi)
         }
+        project.defMapService.rustPsiChanged()  // todo register proper listener (in DefMapService constructor?)
         project.messageBus.syncPublisher(RUST_PSI_CHANGE_TOPIC).rustPsiChanged(file, psi, isStructureModification)
     }
 

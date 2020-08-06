@@ -105,6 +105,25 @@ class RsCfgAttrResolveTest : RsResolveTestBase() {
      """)
 
     @MockAdditionalCfgOptions("intellij_rust")
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test import overrides cfg-disabled item`() = checkByCode("""
+        use foo::func;
+        mod foo {
+            pub fn func() {}
+        }        //X
+
+        #[cfg(not(intellij_rust))]
+        fn func() {}
+
+        mod inner {
+            use super::func;
+            fn main() {
+                func();
+            } //^
+        }
+     """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
     fun `test use item with cfg`() = checkByCode("""
         mod my {
             pub fn bar() {}

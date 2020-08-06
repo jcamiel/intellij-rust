@@ -6,10 +6,14 @@
 package org.rust.lang
 
 import com.intellij.lang.Language
+import com.intellij.openapi.fileTypes.LanguageFileType
 
 object RsLanguage : Language("Rust", "text/rust", "text/x-rust", "application/x-rust") {
     override fun isCaseSensitive() = true
 
     override fun getDisplayName() = "Rust"
+
+    /** Just small optimization */
+    override fun getAssociatedFileType(): LanguageFileType = RsFileType
 }
 

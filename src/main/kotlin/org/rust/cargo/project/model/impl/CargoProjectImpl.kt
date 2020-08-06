@@ -65,6 +65,7 @@ import org.rust.cargo.util.DownloadResult
 import org.rust.ide.notifications.showBalloon
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.macroExpansionManager
+import org.rust.lang.core.resolve2.defMapService
 import org.rust.openapiext.*
 import org.rust.stdext.AsyncValue
 import org.rust.stdext.applyWithSymlink
@@ -617,6 +618,8 @@ private fun fetchCargoWorkspace(
             val rawCfgOptions = toolchain.getCfgOptions(projectDirectory) ?: emptyList()
             val cfgOptions = CfgOptions.parse(rawCfgOptions)
             val ws = CargoWorkspace.deserialize(manifestPath, projectDescriptionData, cfgOptions)
+            // todo вызывается слишком часто ?
+            project.defMapService.onCargoWorkspaceChanged()
             ok(ws)
         } catch (e: ExecutionException) {
             err(e.message ?: "failed to run Cargo")

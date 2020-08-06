@@ -87,9 +87,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                 }
             }
         }
-        NameResolutionTestmarks.shadowingStdCrates.checkHit {
-            testProject.checkReferenceIsResolved<RsPath>("foo/src/lib.rs")
-        }
+        testProject.checkReferenceIsResolved<RsPath>("foo/src/lib.rs")
     }
 
     fun `test resolve local package`() = buildProject {
