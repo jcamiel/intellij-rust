@@ -172,6 +172,40 @@ class RsCoverageTest : RunConfigurationTestBase() {
         }
     }
 
+    fun `test proc macro tests`() {
+        if (SystemInfo.isWindows) return // https://github.com/mozilla/grcov/issues/462
+
+        doTest(runTests = true) {
+            toml("Cargo.toml", """
+                [package]
+                name = "hello"
+                version = "0.1.0"
+                authors = []
+                
+                [lib]
+                proc-macro = true
+            """)
+
+            dir("src") {
+                rust("lib.rs", """
+                    fn foo() {                      // Hits: 2
+                        println!("Hello, world!");  // Hits: 2
+                    }                               // Hits: 2
+
+                    #[test]
+                    fn test1() {                    // Hits: 2
+                        foo();                      // Hits: 1
+                    }                               // Hits: 2
+
+                    #[test]
+                    fn test2() {                    // Hits: 2
+                        foo();                      // Hits: 1
+                    }                               // Hits: 2
+                """)
+            }
+        }
+    }
+
     private fun doTest(runTests: Boolean = false, builder: FileTreeBuilder.() -> Unit) {
         buildProject(builder)
 
