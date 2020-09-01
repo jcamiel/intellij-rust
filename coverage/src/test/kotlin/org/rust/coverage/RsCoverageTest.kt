@@ -147,11 +147,12 @@ class RsCoverageTest : RunConfigurationTestBase() {
 
         doTest(runTests = true) {
             toml("Cargo.toml", """
-            [package]
-            name = "hello"
-            version = "0.1.0"
-            authors = []
-        """)
+                [package]
+                name = "hello"
+                version = "0.1.0"
+                authors = []
+            """)
+
             dir("src") {
                 rust("lib.rs", """
                     fn foo() {                      // Hits: 2
