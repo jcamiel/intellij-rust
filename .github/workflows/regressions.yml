@@ -1,6 +1,6 @@
 name: regressions
 
-on: [ workflow_dispatch, pull_request ]
+on: [ workflow_dispatch, pull_request, push ]
 
 jobs:
     calculate-base-commit:
@@ -16,7 +16,7 @@ jobs:
             # So, we need to find the latest common commit for master branch and chosen one
             # to calculate difference only for branch changes
             - name: Calculate base commit for workflow_dispatch event
-              if: github.event_name == 'workflow_dispatch'
+              if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
               run: echo "::set-env name=BASE_COMMIT::$(git merge-base origin/master ${{ github.sha }})"
 
             # For pull request event, GitHub produces additional merge commit with `master` branch and PR branch as parents
@@ -48,15 +48,30 @@ jobs:
                     - name: cargo
                       path: cargo
                       repository: rust-lang/cargo
-                      exclude_paths: ""
+                    - name: mysql_async
+                      path: mysql_async
+                      repository: blackbeam/mysql_async
                     - name: tokio
                       path: tokio
                       repository: tokio-rs/tokio
-                      exclude_paths: ""
                     - name: amethyst
                       path: amethyst
                       repository: amethyst/amethyst
-                      exclude_paths: ""
+                    - name: clap
+                      path: clap
+                      repository: clap-rs/clap
+                    - name: diesel
+                      path: diesel
+                      repository: diesel-rs/diesel
+                    - name: rust-analyzer
+                      path: rust-analyzer
+                      repository: rust-analyzer/rust-analyzer
+                    - name: xi-editor
+                      path: xi-editor
+                      repository: xi-editor/xi-editor
+                    - name: juniper
+                      path: juniper
+                      repository: graphql-rust/juniper
         env:
             PROJECT_PATH: ${{ matrix.project.path }}
             PROJECT_URL: https://github.com/${{ matrix.project.url }}
