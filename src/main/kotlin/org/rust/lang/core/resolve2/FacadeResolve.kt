@@ -57,7 +57,7 @@ fun processItemDeclarations2(
             val item = toPsi(defMap.defDatabase, project, namespace) ?: return null
 
             // todo ?
-            if (visibility === Visibility.CfgDisabled) return null
+            // if (visibility === Visibility.CfgDisabled) return null
             // if ((visibility === CfgDisabled) != !item.isEnabledByCfg) return null
 
             val itemNamespaces = item.namespaces
