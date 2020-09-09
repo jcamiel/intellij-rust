@@ -10,6 +10,7 @@ import com.intellij.openapi.vfs.newvfs.persistent.PersistentFS
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.ide.utils.isEnabledByCfg
 import org.rust.lang.core.crate.Crate
+import org.rust.lang.core.crate.impl.CargoBasedCrate
 import org.rust.lang.core.crate.impl.DoctestCrate
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -18,11 +19,12 @@ import org.rust.lang.core.resolve.ItemProcessingMode.WITHOUT_PRIVATE_IMPORTS
 import org.rust.openapiext.toPsiFile
 
 @Suppress("SimplifyBooleanWithConstants")
-val Project.isNewResolveEnabled: Boolean get() = rustSettings.newResolveEnabled || true
+val Project.isNewResolveEnabled: Boolean
+    get() = rustSettings.newResolveEnabled || true
 
-fun shouldUseProcessItemDeclarations2(scope: RsMod) =
+fun shouldUseNewResolveIn(scope: RsMod) =
     scope.project.isNewResolveEnabled
-        && scope.containingCrate !is DoctestCrate
+        && scope.containingCrate is CargoBasedCrate
         && scope.modName != TMP_MOD_NAME
         && !scope.isModInsideItem
         && scope.containingCrate != null

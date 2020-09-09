@@ -31,7 +31,7 @@ import org.rust.lang.RsConstants
 import org.rust.lang.core.FeatureAvailability
 import org.rust.lang.core.IN_BAND_LIFETIMES
 import org.rust.lang.core.crate.Crate
-import org.rust.lang.core.crate.impl.DoctestCrate
+import org.rust.lang.core.crate.impl.CargoBasedCrate
 import org.rust.lang.core.macros.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsFile.Attributes.*
@@ -47,6 +47,7 @@ import org.rust.lang.core.resolve.indexes.RsMacroIndex
 import org.rust.lang.core.resolve.ref.*
 import org.rust.lang.core.resolve2.isNewResolveEnabled
 import org.rust.lang.core.resolve2.processMacros
+import org.rust.lang.core.resolve2.shouldUseNewResolveIn
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.types.*
 import org.rust.lang.core.types.consts.CtInferVar
@@ -877,7 +878,8 @@ private fun processMacrosExportedByCrate(crateRoot: RsFile, processor: RsResolve
 
 fun processMacroCallVariantsInScope(context: PsiElement, processor: RsResolveProcessor): Boolean {
     val result = MacroResolver.processMacrosInLexicalOrderUpward(context, processor)
-    if (context.project.isNewResolveEnabled) return result
+    val containingMod = context.contextOrSelf<RsElement>()?.containingMod
+    if (containingMod != null && shouldUseNewResolveIn(containingMod)) return result
     if (result) return true
 
     val element = context.contextOrSelf<RsElement>() ?: return false
@@ -897,7 +899,8 @@ private class MacroResolver private constructor(
         if (result == true) return true
 
         // `startElement.parent is RsMod` => use `CrateDefMap` if new resolve is enabled
-        if (project.isNewResolveEnabled && startElement.contextOrSelf<RsElement>()?.containingCrate !is DoctestCrate) {
+        val containingMod = startElement.contextOrSelf<RsElement>()?.containingMod
+        if (containingMod != null && shouldUseNewResolveIn(containingMod)) {
             check(result == null) { "we must encounter RsMod while processing scopes upward" }
             return false
         }
@@ -941,7 +944,7 @@ private class MacroResolver private constructor(
         if (expandedFrom != null && processExpandedFrom(expandedFrom)) return true
         val context = expandedFrom ?: element.context ?: return false
 
-        if (project.isNewResolveEnabled && context is RsMod && context.containingCrate !is DoctestCrate) {
+        if (context is RsMod && shouldUseNewResolveIn(context)) {
             if (processRemainedExportedMacros()) return true  // process local imports
             return if (processMacros(context, processor)) true else null
         }
@@ -969,7 +972,7 @@ private class MacroResolver private constructor(
         if (expandedFrom != null && processExpandedFrom(expandedFrom)) return true
         val parentPsi = expandedFrom ?: parentStub.psi
 
-        if (project.isNewResolveEnabled && parentPsi is RsMod && parentPsi.containingCrate !is DoctestCrate) {
+        if (parentPsi is RsMod && shouldUseNewResolveIn(parentPsi)) {
             if (processRemainedExportedMacros()) return true  // process local imports
             return if (processMacros(parentPsi, processor)) true else null
         }

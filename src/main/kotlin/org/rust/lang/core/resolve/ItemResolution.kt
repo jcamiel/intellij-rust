@@ -18,7 +18,7 @@ import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.resolve.ref.advancedDeepResolve
 import org.rust.lang.core.resolve2.processItemDeclarations2
-import org.rust.lang.core.resolve2.shouldUseProcessItemDeclarations2
+import org.rust.lang.core.resolve2.shouldUseNewResolveIn
 import org.rust.openapiext.recursionGuard
 import org.rust.stdext.intersects
 import java.util.*
@@ -67,7 +67,7 @@ fun processItemDeclarations(
     originalProcessor: RsResolveProcessor,
     ipm: ItemProcessingMode
 ): Boolean {
-    if (scope is RsMod && shouldUseProcessItemDeclarations2(scope)) {
+    if (scope is RsMod && shouldUseNewResolveIn(scope)) {
         return processItemDeclarations2(scope, ns, originalProcessor, ipm)
     }
 
