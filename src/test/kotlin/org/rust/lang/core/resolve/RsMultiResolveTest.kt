@@ -8,7 +8,6 @@ package org.rust.lang.core.resolve
 import org.intellij.lang.annotations.Language
 import org.rust.lang.core.psi.ext.RsReferenceElement
 
-
 class RsMultiResolveTest : RsResolveTestBase() {
     fun `test struct expr`() = doTest("""
         struct S { foo: i32, foo: () }
@@ -35,14 +34,52 @@ class RsMultiResolveTest : RsResolveTestBase() {
         }
     """)
 
-    fun `test use multi reference`() = doTest("""
+    fun `test use multi reference, function and mod`() = doTest("""
         use m::foo;
               //^
 
         mod m {
-            fn foo() {}
-            mod foo {}
+            pub fn foo() {}
+            pub mod foo {}
         }
+    """)
+
+    fun `test use multi reference, duplicated function`() = doTest("""
+        use m::foo;
+              //^
+
+        mod m {
+            pub fn foo() {}
+            pub fn foo() {}
+        }
+    """)
+
+    fun `test use multi reference, duplicated struct`() = doTest("""
+        use m::Foo;
+              //^
+
+        mod m {
+            pub struct Foo {}
+            pub struct Foo {}
+        }
+    """)
+
+    fun `test use multi reference, duplicated unit struct`() = doTest("""
+        use m::Foo;
+              //^
+
+        mod m {
+            pub struct Foo;
+            pub struct Foo;
+        }
+    """)
+
+    fun `test import enum variant`() = doTest("""
+        enum E { A, A }
+        use E::A;
+        fn main() {
+            let _ = A;
+        }         //^
     """)
 
     fun `test other mod trait bound method`() = doTest("""

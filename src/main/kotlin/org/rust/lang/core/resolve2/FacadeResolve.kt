@@ -43,8 +43,8 @@ fun processItemDeclarations2(
     val (defMap, modData) = project.getDefMapAndModData(scope) ?: return false
 
     modData.visibleItems.processEntriesWithName(processor.name) { name, perNs ->
-        fun /* todo inline */ VisItem.tryConvertToPsi(namespace: Namespace): RsNamedElement? {
-            if (namespace !in ns) return null
+        // todo inline ?
+        fun VisItem.tryConvertToPsi(namespace: Namespace): List<RsNamedElement>? /* null is equivalent to empty list */ {
             if (ipm === WITHOUT_PRIVATE_IMPORTS) {
                 when {
                     visibility === Visibility.Invisible -> return null
@@ -54,34 +54,23 @@ fun processItemDeclarations2(
                 }
             }
 
-            val item = toPsi(defMap.defDatabase, project, namespace) ?: return null
+            return toPsi(defMap.defDatabase, project, namespace)
+        }
 
-            // todo ?
-            // if (visibility === Visibility.CfgDisabled) return null
-            // if ((visibility === CfgDisabled) != !item.isEnabledByCfg) return null
-
-            val itemNamespaces = item.namespaces
-            if (itemNamespaces == TYPES_N_VALUES) {
-                // We will provide `item` only in [Namespace.Types]
-                if (Namespace.Types in ns && namespace === Namespace.Values) return null
-            } else {
-                // todo
-                check(itemNamespaces.size == 1)
+        val visItems = arrayOf(
+            perNs.types to Namespace.Types,
+            perNs.values to Namespace.Values,
+            perNs.macros to Namespace.Macros,
+        )
+        // todo profile & optimize
+        // We need set here because item could belong to multiple namespaces (e.g. unit struct)
+        // Also we need to distinguish unit struct and e.g. mod and function with same name in one module
+        val elements = visItems
+            .flatMapTo(hashSetOf()) { (visItem, namespace) ->
+                if (visItem == null || namespace !in ns) return@flatMapTo emptyList()
+                visItem.tryConvertToPsi(namespace) ?: emptyList()
             }
-            return item
-        }
-
-        // todo refactor ?
-        // todo iterate over `ns` ?
-        val types = perNs.types?.tryConvertToPsi(Namespace.Types)
-        val values = perNs.values?.tryConvertToPsi(Namespace.Values)
-        val macros = perNs.macros?.tryConvertToPsi(Namespace.Macros)
-        // we need setOf here because item could belong to multiple namespaces (e.g. unit struct)
-        for (element in setOf(types, values, macros)) {
-            if (element === null) continue
-            processor(name, element) && return@processEntriesWithName true
-        }
-        false
+        elements.any { processor(name, it) }
     } && return true
 
     // todo не обрабатывать отдельно, а использовать `getVisibleItems` ?
@@ -89,15 +78,19 @@ fun processItemDeclarations2(
     if (Namespace.Types in ns) {
         for ((traitPath, traitVisibility) in modData.unnamedTraitImports) {
             val trait = VisItem(traitPath, traitVisibility)
-            val traitPsi = trait.toPsi(defMap.defDatabase, project, Namespace.Types) ?: continue
-            processor("_", traitPsi) && return true
+            val traitPsi = trait.toPsi(defMap.defDatabase, project, Namespace.Types)
+            traitPsi.any { processor("_", it) } && return true
         }
     }
 
     if (ipm.withExternCrates && Namespace.Types in ns) {
         defMap.externPrelude.processEntriesWithName(processor.name) { name, externCrateModData ->
             if (modData.visibleItems[name]?.types != null) return@processEntriesWithName false
-            val externCratePsi = externCrateModData.asVisItem().toPsi(defMap.defDatabase, project, Namespace.Types)!!  // todo
+            val externCratePsi = externCrateModData
+                .asVisItem()
+                // todo нет способа попроще?)
+                .toPsi(defMap.defDatabase, project, Namespace.Types)
+                .singleOrNull() ?: return@processEntriesWithName false
             processor(name, externCratePsi)
         } && return true
     }
@@ -112,12 +105,14 @@ fun processMacros(scope: RsMod, processor: RsResolveProcessor): Boolean {
     modData.legacyMacros.processEntriesWithName(processor.name) { name, macroInfo ->
         val visItem = VisItem(macroInfo.path, Visibility.Public)
         val macros = visItem.toPsi(defMap.defDatabase, project, Namespace.Macros)
+            .singleOrNull()
             ?: return@processEntriesWithName false
         processor(name, macros)
     } && return true
 
     modData.visibleItems.processEntriesWithName(processor.name) { name, perNs ->
         val macros = perNs.macros?.toPsi(defMap.defDatabase, project, Namespace.Macros)
+            ?.singleOrNull()
             ?: return@processEntriesWithName false
         processor(name, macros)
     } && return true
@@ -137,8 +132,8 @@ private fun Project.getDefMap(crate: Crate): CrateDefMap? {
     val defMap = defMapService.getOrUpdateIfNeeded(crate)
     if (defMap === null) {
         // todo
-        // if (isUnitTestMode) error("defMap is null for $crate during resolve")
-        RESOLVE_LOG.error("defMap is null for $crate during resolve")
+        // if (isUnitTestMode) error("DefMap is null for $crate during resolve")
+        RESOLVE_LOG.error("DefMap is null for $crate during resolve")
     }
     return defMap
 }
@@ -156,49 +151,60 @@ private fun <T> Map<String, T>.processEntriesWithName(name: String?, f: (String,
     }
 }
 
-private fun VisItem.toPsi(defDatabase: DefDatabase, project: Project, ns: Namespace): RsNamedElement? {
+// todo оптимизация: возвращать null вместо emptyList()
+private fun VisItem.toPsi(defDatabase: DefDatabase, project: Project, ns: Namespace): List<RsNamedElement> {
     if (isModOrEnum) return path.toRsModOrEnum(defDatabase, project)
-    val containingModOrEnum = containingMod.toRsModOrEnum(defDatabase, project) ?: return null
+    val containingModOrEnum = containingMod.toRsModOrEnum(defDatabase, project).singleOrNull() ?: return emptyList()
+    val isEnabledByCfg = isEnabledByCfg
+    // todo refactor? (code repetition)
     return when (containingModOrEnum) {
         is RsMod -> {
             if (ns === Namespace.Macros) {
                 // todo expandedItemsIncludingMacros
                 val macros = containingModOrEnum.itemsAndMacros
-                    .filterIsInstance<RsMacro>()
-                    .filter { it.name == name }
-                macros.lastOrNull { it.isEnabledByCfg } ?: macros.lastOrNull()
+                    .filterIsInstance<RsNamedElement>()
+                    .filter { (it is RsMacro || it is RsMacro2) && it.name == name && it.isEnabledByCfg == isEnabledByCfg }
+                // todo это же корректно только для legacy textual macros? а для macro 2.0 может быть мультирезолв?
+                // todo вообще мб сделать отдельный метод для toPsi(ns=Macros), который возвращает не list а single item?
+                val macro = macros.lastOrNull()
+                listOfNotNull(macro)
             } else {
                 containingModOrEnum.expandedItemsExceptImplsAndUses
                     .filterIsInstance<RsNamedElement>()
-                    .filter { it.name == name && ns in it.namespaces }
-                    .singleOrCfgEnabled()
+                    .filter { it.name == name && ns in it.namespaces && it.isEnabledByCfg == isEnabledByCfg }
             }
         }
-        is RsEnumItem -> containingModOrEnum.variants.find { it.name == name && ns in it.namespaces }
-        else -> error("unreachable")
+        is RsEnumItem -> {
+            containingModOrEnum.variants
+                .filter { it.name == name && ns in it.namespaces && it.isEnabledByCfg == isEnabledByCfg }
+        }
+        else -> error("Expected mod or enum, got: $containingModOrEnum")
     }
 }
 
+private val VisItem.isEnabledByCfg: Boolean get() = visibility !== Visibility.CfgDisabled
+
 // todo multiresolve
-private inline fun <reified T : RsElement> Collection<T>.singleOrCfgEnabled(): T? =
+private inline fun <reified T : RsElement> List<T>.singleOrCfgEnabled(): T? =
     singleOrNull() ?: singleOrNull { it.isEnabledByCfg }
 
-private fun ModPath.toRsModOrEnum(defDatabase: DefDatabase, project: Project): RsNamedElement? /* RsMod or RsEnumItem */ {
-    val modData = defDatabase.getModData(this) ?: return null
+private fun ModPath.toRsModOrEnum(defDatabase: DefDatabase, project: Project): List<RsNamedElement /* RsMod or RsEnumItem */> {
+    val modData = defDatabase.getModData(this) ?: return emptyList()
     return if (modData.isEnum) {
         modData.toRsEnum(project)
     } else {
-        modData.toRsMod(project)
+        val mod = modData.toRsMod(project)
+        listOfNotNull(mod)
     }
 }
 
-private fun ModData.toRsEnum(project: Project): RsEnumItem? {
-    if (!isEnum) return null
-    val containingMod = parent?.toRsMod(project) ?: return null
+private fun ModData.toRsEnum(project: Project): List<RsEnumItem> {
+    if (!isEnum) return emptyList()
+    val containingMod = parent?.toRsMod(project) ?: return emptyList()
     return containingMod.expandedItemsExceptImplsAndUses
-        .filter { it is RsEnumItem && it.name == path.name }
-        .singleOrCfgEnabled()
-        as RsEnumItem?
+        // todo combine `filter` ?
+        .filterIsInstance<RsEnumItem>()
+        .filter { it.name == path.name && it.isEnabledByCfg == isEnabledByCfg }
 }
 
 // todo assert not null / log warning
