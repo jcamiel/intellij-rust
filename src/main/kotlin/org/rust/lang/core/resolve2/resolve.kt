@@ -211,6 +211,14 @@ class ModData(
     /** Traits imported via `use Trait as _;` */
     val unnamedTraitImports: MutableMap<ModPath, Visibility> = hashMapOf()
 
+    /**
+     * Make sense only for files ([isRsFile] == true).
+     * Value `false` means that `this` is not accessible from [CrateDefMap.root] through [ModData.childModules],
+     * but can be accessible using [CrateDefMap.fileInfos].
+     * It could happen when two mod declarations with same path has different cfg-attributes.
+     */
+    var isShadowedByOtherFile: Boolean = true
+
     operator fun get(name: String): PerNs = visibleItems.getOrDefault(name, PerNs.Empty)
 
     fun getVisibleItems(filterVisibility: (Visibility) -> Boolean): List<Pair<String, PerNs>> {

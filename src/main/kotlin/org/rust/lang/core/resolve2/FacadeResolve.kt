@@ -22,16 +22,29 @@ import org.rust.openapiext.toPsiFile
 val Project.isNewResolveEnabled: Boolean
     get() = rustSettings.newResolveEnabled || true
 
-fun shouldUseNewResolveIn(scope: RsMod) =
+fun shouldUseNewResolveIn(scope: RsMod): Boolean =
     scope.project.isNewResolveEnabled
         && scope.containingCrate is CargoBasedCrate
         && scope.modName != TMP_MOD_NAME
         && !scope.isModInsideItem
         && scope.containingCrate != null
+        && !scope.isShadowedByOtherMod()
 
 private val RsMod.isModInsideItem: Boolean
     // todo `mod foo { mod inner; }` - так можно?)
     get() = this is RsModItem && context !is RsMod
+
+/** "shadowed by other mod" means that [ModData] is not accessible from [CrateDefMap.root] through [ModData.childModules] */
+private fun RsMod.isShadowedByOtherMod(): Boolean {
+    // todo performance: `getDefMapAndModData` is called twice
+    val (_, modData) = project.getDefMapAndModData(this) ?: return false
+    val isShadowedByOtherFile = modData.isShadowedByOtherFile
+
+    val isDeeplyEnabledByCfg = (containingFile as RsFile).isDeeplyEnabledByCfg && isEnabledByCfg
+    val isShadowedByOtherInlineMod = isDeeplyEnabledByCfg != modData.isDeeplyEnabledByCfg
+
+    return isShadowedByOtherFile || isShadowedByOtherInlineMod
+}
 
 fun processItemDeclarations2(
     scope: RsMod,

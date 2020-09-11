@@ -40,7 +40,21 @@ import java.util.concurrent.atomic.AtomicInteger
     val defMap = buildDefMapContainingExplicitItems(context, dependenciesDefMaps) ?: return null
     DefCollector(project, defMap, context).collect()
     project.defMapService.afterDefMapBuilt(defMap)
+    defMap.afterBuilt()
     return defMap
+}
+
+private fun CrateDefMap.afterBuilt() {
+    fun ModData.visitDescendants(visitor: (ModData) -> Unit) {
+        visitor(this)
+        for (childMod in childModules.values) {
+            childMod.visitDescendants(visitor)
+        }
+    }
+
+    root.visitDescendants {
+        it.isShadowedByOtherFile = false
+    }
 }
 
 fun DefMapService.getOrUpdateIfNeeded(crate: Crate): CrateDefMap? {
