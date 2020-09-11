@@ -182,7 +182,7 @@ class ModData(
     val parent: ModData?,
     val crate: CratePersistentId,
     val path: ModPath,
-    val isEnabledByCfg: Boolean,
+    val isDeeplyEnabledByCfg: Boolean,
     /** id of containing file */
     val fileId: FileId,
     // todo тип? String / List<String> / ModPath

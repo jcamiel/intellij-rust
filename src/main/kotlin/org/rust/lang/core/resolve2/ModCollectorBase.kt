@@ -25,7 +25,7 @@ import java.io.DataOutput
 class ModCollectorBase private constructor(
     private val visitor: ModVisitor,
     private val crate: Crate,
-    private val isModEnabledByCfg: Boolean,
+    private val isDeeplyEnabledByCfg: Boolean,
 ) {
 
     /** [itemsOwner] - [RsMod] or [RsForeignModItem] */
@@ -69,7 +69,6 @@ class ModCollectorBase private constructor(
     }
 
     private fun collectUseItem(useItem: RsUseItem) {
-        val isEnabledByCfg = isModEnabledByCfg && useItem.isEnabledByCfgSelf(crate)
         val visibility = VisibilityLight.from(useItem)
         val hasPreludeImport = useItem.hasPreludeImport
         // todo move dollarCrateId from RsUseItem to RsPath
@@ -80,7 +79,7 @@ class ModCollectorBase private constructor(
                 usePath = adjustPathWithDollarCrate(usePath, dollarCrateId),
                 nameInScope = nameInScope,
                 visibility = visibility,
-                isEnabledByCfg = isEnabledByCfg,
+                isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && useItem.isEnabledByCfgSelf(crate),
                 isGlob = speck.isStarImport,
                 isPrelude = hasPreludeImport
             )
@@ -93,7 +92,7 @@ class ModCollectorBase private constructor(
             usePath = externCrate.referenceName,
             nameInScope = externCrate.nameWithAlias,
             visibility = VisibilityLight.from(externCrate),
-            isEnabledByCfg = isModEnabledByCfg && externCrate.isEnabledByCfgSelf(crate),
+            isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && externCrate.isEnabledByCfgSelf(crate),
             isExternCrate = true,
             isMacroUse = externCrate.hasMacroUse
         )
@@ -108,15 +107,15 @@ class ModCollectorBase private constructor(
         val itemLight = ItemLight(
             name = name,
             visibility = VisibilityLight.from(item),
-            isEnabledByCfg = isModEnabledByCfg && item.isEnabledByCfgSelf(crate),
+            isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && item.isEnabledByCfgSelf(crate),
             namespaces = item.namespaces
         )
         visitor.collectItem(itemLight, item)
     }
 
     private fun collectMacroCall(call: RsMacroCall) {
-        val isEnabledByCfg = isModEnabledByCfg && call.isEnabledByCfgSelf(crate)
-        if (!isEnabledByCfg) return
+        val isCallDeeplyEnabledByCfg = isDeeplyEnabledByCfg && call.isEnabledByCfgSelf(crate)
+        if (!isCallDeeplyEnabledByCfg) return
         val body = call.includeMacroArgument?.expr?.getValue(crate) ?: call.macroBody ?: return
         val path = getMacroCallPath(call)
         val callLight = MacroCallLight(path, body)
@@ -125,8 +124,8 @@ class ModCollectorBase private constructor(
 
     private fun collectMacroDef(def: RsMacro) {
         // check(def.stub != null)  // todo
-        val isEnabledByCfg = isModEnabledByCfg && def.isEnabledByCfgSelf(crate)
-        if (!isEnabledByCfg) return  // todo
+        val isDefDeeplyEnabledByCfg = isDeeplyEnabledByCfg && def.isEnabledByCfgSelf(crate)
+        if (!isDefDeeplyEnabledByCfg) return  // todo
         val defLight = MacroDefLight(
             name = def.name ?: return,
             macroBodyText = def.greenStub?.macroBody ?: def.macroBodyStubbed?.text ?: return,
@@ -138,8 +137,8 @@ class ModCollectorBase private constructor(
     }
 
     companion object {
-        fun collectMod(mod: RsMod, isEnabledByCfg: Boolean, visitor: ModVisitor, crate: Crate) {
-            val collector = ModCollectorBase(visitor, crate, isEnabledByCfg)
+        fun collectMod(mod: RsMod, isDeeplyEnabledByCfg: Boolean, visitor: ModVisitor, crate: Crate) {
+            val collector = ModCollectorBase(visitor, crate, isDeeplyEnabledByCfg)
             collector.collectElements(mod)
             collector.visitor.afterCollectMod(mod)
         }
@@ -224,7 +223,7 @@ sealed class VisibilityLight : Writeable {
 data class ItemLight(
     val name: String,
     val visibility: VisibilityLight,
-    val isEnabledByCfg: Boolean,
+    val isDeeplyEnabledByCfg: Boolean,
     val namespaces: Set<Namespace>,
 ) : Writeable {
     override fun writeTo(data: DataOutput) {
@@ -232,7 +231,7 @@ data class ItemLight(
         visibility.writeTo(data)
 
         // todo use one byte
-        data.writeBoolean(isEnabledByCfg)
+        data.writeBoolean(isDeeplyEnabledByCfg)
         data.writeBoolean(Namespace.Types in namespaces)
         data.writeBoolean(Namespace.Values in namespaces)
     }
@@ -242,7 +241,7 @@ data class ImportLight(
     val usePath: String,  // foo::bar::baz
     val nameInScope: String,
     val visibility: VisibilityLight,
-    val isEnabledByCfg: Boolean,
+    val isDeeplyEnabledByCfg: Boolean,
     val isGlob: Boolean = false,
     val isExternCrate: Boolean = false,
     val isMacroUse: Boolean = false,
@@ -254,7 +253,7 @@ data class ImportLight(
         IOUtil.writeUTF(data, nameInScope)
         visibility.writeTo(data)
         // todo use one byte
-        data.writeBoolean(isEnabledByCfg)
+        data.writeBoolean(isDeeplyEnabledByCfg)
         data.writeBoolean(isGlob)
         data.writeBoolean(isExternCrate)
         data.writeBoolean(isMacroUse)

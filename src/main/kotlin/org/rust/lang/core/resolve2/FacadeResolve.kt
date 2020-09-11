@@ -201,6 +201,7 @@ private fun ModPath.toRsModOrEnum(defDatabase: DefDatabase, project: Project): L
 private fun ModData.toRsEnum(project: Project): List<RsEnumItem> {
     if (!isEnum) return emptyList()
     val containingMod = parent?.toRsMod(project) ?: return emptyList()
+    val isEnabledByCfg = asVisItem().isEnabledByCfg
     return containingMod.expandedItemsExceptImplsAndUses
         // todo combine `filter` ?
         .filterIsInstance<RsEnumItem>()
@@ -220,7 +221,7 @@ private fun ModData.toRsMod(project: Project, useExpandedItems /* todo remove (a
             val items = if (useExpandedItems) mod.expandedItemsExceptImplsAndUses else mod.itemsAndMacros.toList()
             items
                 .filterIsInstance<RsModItem>()
-                .filter { it.modName == segment && it.isEnabledByCfg /* todo */ }
+                .filter { it.modName == segment }
                 .singleOrCfgEnabled()
                 ?: return null
         }

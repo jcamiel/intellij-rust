@@ -83,7 +83,7 @@ fun buildDefMapContainingExplicitItems(
         parent = null,
         crate = crateId,
         path = ModPath(crateId, emptyList()),
-        isEnabledByCfg = true,
+        isDeeplyEnabledByCfg = true,
         fileId = crateRoot.virtualFile.fileId,
         fileRelativePath = "",
         ownedDirectoryId = crateRootOwnedDirectory.virtualFile.fileId
@@ -197,7 +197,7 @@ class ModCollector(
         } else {
             this
         }
-        ModCollectorBase.collectMod(mod, modData.isEnabledByCfg, visitor, crate)
+        ModCollectorBase.collectMod(mod, modData.isDeeplyEnabledByCfg, visitor, crate)
     }
 
     override fun collectImport(import: ImportLight) {
@@ -205,13 +205,13 @@ class ModCollector(
             containingMod = modData,
             usePath = import.usePath,
             nameInScope = import.nameInScope,
-            visibility = convertVisibility(import.visibility, import.isEnabledByCfg),
+            visibility = convertVisibility(import.visibility, import.isDeeplyEnabledByCfg),
             isGlob = import.isGlob,
             isExternCrate = import.isExternCrate,
             isMacroUse = import.isPrelude
         )
 
-        if (import.isEnabledByCfg && import.isExternCrate && import.isMacroUse) {
+        if (import.isDeeplyEnabledByCfg && import.isExternCrate && import.isMacroUse) {
             importExternCrateMacros(import.usePath)
         }
     }
@@ -248,7 +248,7 @@ class ModCollector(
     // todo причём здесь RsFile ?
     /** [name] passed for performance reason, because [RsFile.modName] is slow */
     private fun convertToVisItem(item: ItemLight, itemPsi: RsItemElement): VisItem? {
-        val visibility = convertVisibility(item.visibility, item.isEnabledByCfg)
+        val visibility = convertVisibility(item.visibility, item.isDeeplyEnabledByCfg)
         val itemPath = modData.path.append(item.name)
         val isModOrEnum = itemPsi is RsMod || itemPsi is RsModDeclItem || itemPsi is RsEnumItem
         return VisItem(itemPath, visibility, isModOrEnum)
@@ -270,9 +270,9 @@ class ModCollector(
             }
             else -> return null
         }
-        val isEnabledByCfg = itemLight.isEnabledByCfg
-        val childModData = collectChildModule(childMod, itemLight.name, isEnabledByCfg, pathAttribute)
-        if (hasMacroUse && isEnabledByCfg) modData.legacyMacros += childModData.legacyMacros
+        val isDeeplyEnabledByCfg = itemLight.isDeeplyEnabledByCfg
+        val childModData = collectChildModule(childMod, itemLight.name, isDeeplyEnabledByCfg, pathAttribute)
+        if (hasMacroUse && isDeeplyEnabledByCfg) modData.legacyMacros += childModData.legacyMacros
         return childModData
     }
 
@@ -283,7 +283,7 @@ class ModCollector(
     private fun collectChildModule(
         childMod: RsMod,
         childModName: String,
-        isEnabledByCfg: Boolean,
+        isDeeplyEnabledByCfg: Boolean,
         pathAttribute: String?
     ): ModData {
         context.indicator.checkCanceled()
@@ -297,7 +297,7 @@ class ModCollector(
             parent = modData,
             crate = modData.crate,
             path = childModPath,
-            isEnabledByCfg = isEnabledByCfg,
+            isDeeplyEnabledByCfg = isDeeplyEnabledByCfg,
             fileId = fileId,
             fileRelativePath = fileRelativePath,
             ownedDirectoryId = childMod.getOwnedDirectory(modData, pathAttribute)?.virtualFile?.fileId
@@ -328,7 +328,7 @@ class ModCollector(
             parent = modData,
             crate = modData.crate,
             path = enumPath,
-            isEnabledByCfg = enum.isEnabledByCfg,
+            isDeeplyEnabledByCfg = enum.isDeeplyEnabledByCfg,
             fileId = modData.fileId,
             fileRelativePath = "${modData.fileRelativePath}::$enumName",
             ownedDirectoryId = modData.ownedDirectoryId,  // actually can use any value here
@@ -337,7 +337,8 @@ class ModCollector(
         for (variantPsi in enumPsi.variants) {
             val variantName = variantPsi.name ?: continue
             val variantPath = enumPath.append(variantName)
-            val variantVisibility = if (enumData.isEnabledByCfg) Visibility.Public else Visibility.CfgDisabled
+            val isVariantDeeplyEnabledByCfg = enumData.isDeeplyEnabledByCfg && variantPsi.isEnabledByCfgSelf(crate)
+            val variantVisibility = if (isVariantDeeplyEnabledByCfg) Visibility.Public else Visibility.CfgDisabled
             val variant = VisItem(variantPath, variantVisibility)
             enumData.visibleItems[variantName] = PerNs(variant, variantPsi.namespaces)
         }
@@ -345,7 +346,7 @@ class ModCollector(
     }
 
     override fun collectMacroCall(call: MacroCallLight, callPsi: RsMacroCall) {
-        check(modData.isEnabledByCfg) { "for performance reasons cfg-disabled macros should not be collected" }
+        check(modData.isDeeplyEnabledByCfg) { "for performance reasons cfg-disabled macros should not be collected" }
         val bodyHash = callPsi.bodyHash
         if (bodyHash === null && call.path != "include") return
         val macroDef = if (call.path.contains("::")) null else modData.legacyMacros[call.path]
@@ -367,8 +368,8 @@ class ModCollector(
         }
     }
 
-    private fun convertVisibility(visibility: VisibilityLight, isEnabledByCfg: Boolean): Visibility {
-        if (!isEnabledByCfg) return Visibility.CfgDisabled
+    private fun convertVisibility(visibility: VisibilityLight, isDeeplyEnabledByCfg: Boolean): Visibility {
+        if (!isDeeplyEnabledByCfg) return Visibility.CfgDisabled
         return when (visibility) {
             VisibilityLight.Public -> Visibility.Public
             is VisibilityLight.Restricted -> resolveRestrictedVisibility(visibility.inPath, crateRoot, modData)
@@ -424,7 +425,7 @@ private fun resolveRestrictedVisibility(
 private fun ModData.checkChildModulesAndVisibleItemsConsistency() {
     for ((name, childMod) in childModules) {
         assertEquals(name, childMod.name, "Inconsistent name of $childMod")
-        check(visibleItems[name]?.types?.isModOrEnum === true)
+        check(visibleItems[name]?.types?.isModOrEnum == true)
         { "Inconsistent `visibleItems` and `childModules` in $this for name $name" }
     }
 }
