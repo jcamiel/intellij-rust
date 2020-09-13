@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
     DefCollector(project, defMap, context).collect()
     project.defMapService.afterDefMapBuilt(defMap)
     defMap.afterBuilt()
+    afterDefMapBuiltDebug(defMap, context)
     return defMap
 }
 
