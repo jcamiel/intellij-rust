@@ -12,18 +12,18 @@ import org.rust.lang.core.macros.macroExpansionManager
 class RsBuildDefMapTest : RsRealProjectTestBase() {
 
     /** Don't run it on Rustc! It's a kind of stress-test */
-    fun `test analyze rustc`() = doTest(RUSTC)
+    fun `test build rustc`() = doTest(RUSTC)
 
-    fun `test analyze empty`() = doTest(EMPTY)
-    fun `test analyze Cargo`() = doTest(CARGO)
-    fun `test analyze mysql_async`() = doTest(MYSQL_ASYNC)
-    fun `test analyze tokio`() = doTest(TOKIO)
-    fun `test analyze amethyst`() = doTest(AMETHYST)
-    fun `test analyze clap`() = doTest(CLAP)
-    fun `test analyze diesel`() = doTest(DIESEL)
-    fun `test analyze rust_analyzer`() = doTest(RUST_ANALYZER)
-    fun `test analyze xi_editor`() = doTest(XI_EDITOR)
-    fun `test analyze juniper`() = doTest(JUNIPER)
+    fun `test build empty`() = doTest(EMPTY)
+    fun `test build Cargo`() = doTest(CARGO)
+    fun `test build mysql_async`() = doTest(MYSQL_ASYNC)
+    fun `test build tokio`() = doTest(TOKIO)
+    fun `test build amethyst`() = doTest(AMETHYST)
+    fun `test build clap`() = doTest(CLAP)
+    fun `test build diesel`() = doTest(DIESEL)
+    fun `test build rust_analyzer`() = doTest(RUST_ANALYZER)
+    fun `test build xi_editor`() = doTest(XI_EDITOR)
+    fun `test build juniper`() = doTest(JUNIPER)
 
     private fun doTest(info: RealProjectInfo) {
         val disposable = project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(MacroExpansionScope.ALL, name)

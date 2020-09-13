@@ -140,7 +140,7 @@ private class DefMapUpdater(
         val cratesToUpdateAll = cratesToUpdate.withReversedDependencies()
         val builtDefMaps = getBuiltDefMaps(cratesToUpdateAll)
         val pool = getPool(cratesToUpdateAll.size)
-        AsyncDefMapBuilder(defMapService, cratesToUpdateAll, builtDefMaps, indicator, pool).build()
+        AsyncDefMapBuilder(defMapService, cratesToUpdateAll.topSort(topSortedCrates), builtDefMaps, indicator, pool).build()
     }
 
     private fun findCratesToCheck(): List<Pair<Crate, DefMapHolder>> {
@@ -200,6 +200,9 @@ private fun List<Crate>.withReversedDependencies(): Set<Crate> {
     }
     return result
 }
+
+private fun Set<Crate>.topSort(topSortedCrates: List<Crate>): List<Crate> =
+    topSortedCrates.filterTo(mutableListOf()) { it in this }
 
 class SingleThreadExecutor : Executor {
     override fun execute(action: Runnable) = action.run()

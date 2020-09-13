@@ -62,6 +62,7 @@ fun CrateDefMap.resolvePathFp(
         // we still have path segments left, but the path so far
         // didn't resolve in the types namespace => no resolution
         val currentModAsVisItem = currentPerNs.types
+            // todo этого недостаточно - ещё нужно проверять что `it.visibility` видима в sourceMod
             ?.takeIf { withInvisibleItems || !it.visibility.isInvisible }
             ?: return ResolvePathResult.empty(reachedFixedPoint = false)
 

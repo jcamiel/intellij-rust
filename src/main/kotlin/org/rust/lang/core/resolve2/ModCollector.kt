@@ -39,12 +39,13 @@ class CollectorContext(
     /** All explicit imports (not expanded from macros) */
     val imports: MutableList<Import> = mutableListOf()
 
-    /** All explicit macro calls  */
+    /** All explicit macro calls */
     val macroCalls: MutableList<MacroCallInfo> = mutableListOf()
 }
 
 fun buildDefMapContainingExplicitItems(
     context: CollectorContext,
+    // todo изменить на `Map<CrateId, CrateDefMap>`? чтобы не нужно было считать `allDependenciesDefMaps`
     dependenciesDefMaps: Map<Crate, CrateDefMap>
 ): CrateDefMap? {
     val crate = context.crate

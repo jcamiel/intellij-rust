@@ -309,12 +309,14 @@ data class PerNs(
         macros = merge(macros, other.macros)
     }
 
-    fun or(other: PerNs): PerNs =
-        PerNs(
+    fun or(other: PerNs): PerNs {
+        if (other.isEmpty) return this
+        return PerNs(
             types ?: other.types,
             values ?: other.values,
             macros ?: other.macros
         )
+    }
 
     fun mapItems(f: (VisItem) -> VisItem): PerNs =
         PerNs(

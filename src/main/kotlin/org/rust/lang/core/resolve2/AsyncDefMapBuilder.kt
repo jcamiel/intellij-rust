@@ -18,7 +18,7 @@ private const val PRINT_TIME_STATISTICS: Boolean = true
 
 class AsyncDefMapBuilder(
     private val defMapService: DefMapService,
-    private val crates: Set<Crate>,
+    private val crates: List<Crate>,  // should be top sorted
     defMaps: Map<Crate, CrateDefMap>,
     private val indicator: ProgressIndicator,
     private val pool: Executor,
@@ -29,14 +29,15 @@ class AsyncDefMapBuilder(
     }
 
     /** Values - number of dependencies for which [CrateDefMap] is not build yet */
-    private val remainingDependenciesCounts: MutableMap<Crate, AtomicInteger> =
+    private val remainingDependenciesCounts: MutableMap<Crate, AtomicInteger> = run {
+        val cratesSet = crates.toSet()
         crates.associateWithTo(hashMapOf()) {
             val remainingDependencies = it.dependencies
-                .filter { dep -> dep.crate in crates }
+                .filter { dep -> dep.crate in cratesSet }
                 .size
             AtomicInteger(remainingDependencies)
         }
-
+    }
     private val builtDefMaps: MutableMap<Crate, CrateDefMap> = ConcurrentHashMap(defMaps)
 
     /** We don't use [CountDownLatch] because [CompletableFuture] allows easier exception handling */
@@ -48,16 +49,18 @@ class AsyncDefMapBuilder(
 
     fun build() {
         val wallTime = measureTimeMillis {
-            buildImpl()
+            if (pool is SingleThreadExecutor) {
+                buildSync()
+            } else {
+                buildAsync()
+            }
         }
 
         timesBuildDefMaps += wallTime
         if (PRINT_TIME_STATISTICS) printTimeStatistics(wallTime)
     }
 
-    private fun buildImpl() {
-        // todo сначала заполнить все defMapFeature,
-        //  чтобы в waitOrGetOrBuild не строились рекурсивно `defMap`ы
+    private fun buildAsync() {
         remainingDependenciesCounts
             .filterValues { it.get() == 0 }
             .keys
@@ -65,11 +68,23 @@ class AsyncDefMapBuilder(
         completableFuture.getWithRethrow()
     }
 
+    private fun buildSync() {
+        ourRunReadAction(indicator) {
+            for (crate in crates) {
+                tasksTimes[crate] = measureTimeMillis {
+                    doBuildDefMap(crate)
+                }
+            }
+        }
+    }
+
     private fun buildDefMapAsync(crate: Crate) {
         pool.execute {
             try {
                 tasksTimes[crate] = measureTimeMillis {
-                    doBuildDefMap(crate)
+                    ourRunReadAction(indicator) {
+                        doBuildDefMap(crate)
+                    }
                 }
             } catch (e: Throwable) {
                 completableFuture.completeExceptionally(e)
@@ -80,23 +95,21 @@ class AsyncDefMapBuilder(
     }
 
     private fun doBuildDefMap(crate: Crate) {
-        ourRunReadAction(indicator) {
-            val crateId = crate.id ?: return@ourRunReadAction
-            val dependenciesDefMaps = crate.flatDependencies
-                .mapNotNull {
-                    // it can be null e.g. if dependency has null id
-                    val dependencyDefMap = builtDefMaps[it] ?: return@mapNotNull null
-                    it to dependencyDefMap
-                }
-                .toMap()
-            val defMap = buildDefMap(crate, dependenciesDefMaps, indicator)
-            val holder = defMapService.getDefMapHolder(crateId)
-            holder.defMap = defMap
-            holder.shouldRebuild = false
-            holder.setLatestStamp()
-            if (defMap != null) {
-                builtDefMaps[crate] = defMap
+        val crateId = crate.id ?: return
+        val dependenciesDefMaps = crate.flatDependencies
+            .mapNotNull {
+                // it can be null e.g. if dependency has null id
+                val dependencyDefMap = builtDefMaps[it] ?: return@mapNotNull null
+                it to dependencyDefMap
             }
+            .toMap()
+        val defMap = buildDefMap(crate, dependenciesDefMaps, indicator)
+        val holder = defMapService.getDefMapHolder(crateId)
+        holder.defMap = defMap
+        holder.shouldRebuild = false
+        holder.setLatestStamp()
+        if (defMap != null) {
+            builtDefMaps[crate] = defMap
         }
     }
 

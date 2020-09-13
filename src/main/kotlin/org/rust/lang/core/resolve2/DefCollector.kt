@@ -61,11 +61,10 @@ class DefCollector(
     private val macroExpanderShared: MacroExpansionShared = MacroExpansionShared.getInstance()
 
     fun collect() {
-        var changed = true
-        while (changed) {
+        do {
             resolveImports()
-            changed = expandMacros()
-        }
+            val changed = expandMacros()
+        } while (changed)
     }
 
     /**
@@ -74,8 +73,7 @@ class DefCollector(
      * This is a fixed point algorithm. We resolve imports until no forward progress in resolving imports is made
      */
     private fun resolveImports() {
-        var hasChangedImports = true
-        while (hasChangedImports) {
+        do {
             var hasChangedIndeterminateImports = false
             val hasResolvedImports = unresolvedImports.removeIf { import ->
                 context.indicator.checkCanceled()
@@ -102,8 +100,7 @@ class DefCollector(
                     Unresolved -> false
                 }
             }
-            hasChangedImports = hasResolvedImports || hasChangedIndeterminateImports
-        }
+        } while (hasResolvedImports || hasChangedIndeterminateImports)
     }
 
     private fun resolveImport(import: Import): PartialResolvedImport {
