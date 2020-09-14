@@ -5,26 +5,24 @@
 
 package org.rust.lang.core.resolve2
 
-import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.newvfs.persistent.PersistentFS
-import com.intellij.psi.StubBasedPsiElement
 import com.intellij.psi.stubs.StubElement
 import com.intellij.util.SmartList
 import com.intellij.util.io.IOUtil
 import org.rust.lang.core.crate.CratePersistentId
 import org.rust.lang.core.macros.*
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.psi.ext.body
+import org.rust.lang.core.psi.ext.bodyTextRange
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
 import org.rust.lang.core.resolve2.ImportType.GLOB
 import org.rust.lang.core.resolve2.ImportType.NAMED
 import org.rust.lang.core.resolve2.PartialResolvedImport.*
 import org.rust.lang.core.resolve2.Visibility.Invisible
-import org.rust.lang.core.stubs.RsMacroCallStub
-import org.rust.lang.core.stubs.RsUseItemStub
+import org.rust.lang.core.stubs.*
 import org.rust.openapiext.findFileByMaybeRelativePath
 import org.rust.openapiext.pathAsPath
 import org.rust.openapiext.testAssert
@@ -336,27 +334,15 @@ class DefCollector(
         }
         val defData = RsMacroDataWithHash(RsMacroData(def.body), def.bodyHash)
         val callData = RsMacroCallDataWithHash(RsMacroCallData(call.body), call.bodyHash)
-
-        val useExpansionCache = true
-        val (expandedText, expandedFile, ranges) = if (useExpansionCache) {
-            val (expandedFile, ranges) = macroExpanderShared.createExpansionPsi(project, macroExpander, defData, callData)
-                ?: return true
-            Triple(expandedFile.text, expandedFile, ranges)
-        } else {
-            val psiFactory = RsPsiFactory(project)
-            val (expandedText, ranges) = macroExpander.expandMacroAsText(defData.data, callData.data)
-                ?: return true
-            val expansion = parseExpandedTextWithContext(MacroExpansionContext.ITEM, psiFactory, expandedText)
-                ?: return true
-            Triple(expandedText, expansion.file, ranges)
-        }
+        val (expandedText, expandedFile, ranges) =
+            macroExpanderShared.createExpansionStub(project, macroExpander, defData, callData) ?: return true
 
         processDollarCrate(call, def, expandedText, ranges, expandedFile)
 
         // Note: we don't need to call [RsExpandedElement.setContext] for [expansion.elements],
         // because it is needed only for [RsModDeclItem], and we use our own resolve for [RsModDeclItem]
 
-        processExpandedItems(call.containingMod, expandedFile, call.depth + 1, calculateHash = false)
+        getModCollectorForExpandedElements(call)?.collectExpandedElements(expandedFile)
         return true
     }
 
@@ -375,11 +361,41 @@ class DefCollector(
         def: MacroDefInfo,
         expandedText: CharSequence,
         ranges: RangeMap,  // between `call.body` and `expandedText`
-        file: RsFile
+        file: RsFileStub
     ) {
-        val occurrencesInFile = MACRO_DOLLAR_CRATE_IDENTIFIER_REGEX.findAll(expandedText).map { it.range.first }
-        // для каждого occurrence IntellijRustDollarCrate в `expandedText` ищем crateId
-        val rangesInFile = occurrencesInFile.associateWith { indexInExpandedText ->
+        val rangesInFile = findCrateIdForEachDollarCrate(expandedText, ranges, call, def)
+        if (rangesInFile.isEmpty() && !def.hasLocalInnerMacros) return
+
+        // todo оптимизация: mapOffsetFromExpansionToCallBody работает за линию, мб можно за log
+        file.forEachTopLevelElement { element ->
+            if (rangesInFile.isNotEmpty()) {
+                processDollarCrateInsideExpandedElement(element, rangesInFile)
+            }
+
+            if (def.hasLocalInnerMacros && element is RsMacroCallStub) {
+                val path = element.path
+                val pathOffsetInExpansion = path.startOffset
+                val pathOffsetInCall = ranges.mapOffsetFromExpansionToCallBody(pathOffsetInExpansion)
+                val isExpandedFromDef = pathOffsetInCall === null
+                if (isExpandedFromDef) {
+                    path.putUserData(RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY, def.crate)
+                }
+            }
+        }
+    }
+
+    /**
+     * Entry `(index, crateId)` in returning map means that
+     * [expandedText] starting from `index` contains [MACRO_DOLLAR_CRATE_IDENTIFIER] which corresponds to `crateId`
+     */
+    private fun findCrateIdForEachDollarCrate(
+        expandedText: CharSequence,
+        ranges: RangeMap,  // between `call.body` and `expandedText`
+        call: MacroCallInfo,
+        def: MacroDefInfo
+    ): Map<Int, CratePersistentId> {
+        val occurrencesInExpandedText = MACRO_DOLLAR_CRATE_IDENTIFIER_REGEX.findAll(expandedText).map { it.range.first }
+        return occurrencesInExpandedText.associateWith { indexInExpandedText ->
             val indexInCallBody = ranges.mapOffsetFromExpansionToCallBody(indexInExpandedText)
             val crateId: CratePersistentId = if (indexInCallBody != null) {
                 testAssert {
@@ -397,38 +413,16 @@ class DefCollector(
             }
             crateId
         }
-        if (rangesInFile.isEmpty() && !def.hasLocalInnerMacros) return
-
-        // todo: мб лучше вместо цикла по всем descendantsOfType перебирать rangesInFile и явно искать top level element ?
-        //     - для путей внутри RsUseItem и RsMacroCall можно и не искать, просто использовать их userData
-        //     - для RsMacroCall body можно делать parentOfType<RsMacroCall>()
-        //  нельзя - потому что findElementBy(offset) работает на psi а не на stubs
-        // todo: оптимизация - написать свой stubDescendantsOfTypeStrict, которой не заходит внутрь RsItemElement
-        //  то есть обрабатывает top level items и заходит внутри RsMod
-        // todo оптимизация: mapOffsetFromExpansionToCallBody работает за линию, мб можно за log
-        for (elementPsi in file.stubDescendantsOfTypeStrict<RsElement>()) {
-            val element = (elementPsi as StubBasedPsiElement<*>).greenStub as StubElement<out RsElement>
-            if (rangesInFile.isNotEmpty()) {
-                processDollarCrateInsideExpandedElement(element, rangesInFile)
-            }
-
-            if (def.hasLocalInnerMacros && element is RsMacroCallStub) {
-                val path = element.path
-                val pathOffsetInExpansion = path.startOffset
-                val pathOffsetInCall = ranges.mapOffsetFromExpansionToCallBody(pathOffsetInExpansion)
-                val isExpandedFromDef = pathOffsetInCall === null
-                if (isExpandedFromDef) {
-                    path.putUserData(RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY, def.crate)
-                }
-            }
-        }
     }
 
     // нас интересуют три типа RsExpandedElement:
     // - UseItem - если начинается с $crate
     // - MacroCall - если начинается с $crate или если body содержит $crate
     // - Macro - если body содержит $crate
-    private fun processDollarCrateInsideExpandedElement(element: StubElement<out RsElement>, rangesInFile: Map<Int, CratePersistentId>) {
+    private fun processDollarCrateInsideExpandedElement(
+        element: StubElement<*>,
+        rangesInFile: Map<Int, CratePersistentId>
+    ) {
         fun filterRangesInside(range: TextRange): Map<Int, CratePersistentId> =
             rangesInFile.filterKeys { indexInFile ->
                 val rangeInFile = TextRange(indexInFile, indexInFile + MACRO_DOLLAR_CRATE_IDENTIFIER.length)
@@ -439,8 +433,9 @@ class DefCollector(
             is RsUseItemStub -> {
                 // expandedText = 'use $crate::foo;'
                 // TODO: `use {$crate::foo, $crate::bar};` - `$crate` may come from different macros
-                val crateId = element.psi.stubDescendantsOfTypeStrict<RsPath>()
-                    .mapNotNull { rangesInFile[it.stub.startOffset] }
+                val useSpeck = element.useSpeck ?: return
+                val crateId = useSpeck.getTopLevelPaths()
+                    .mapNotNull { rangesInFile[it.startOffset] }
                     .distinct().singleOrNull()
                     ?: return
                 element.putUserData(RESOLVE_DOLLAR_CRATE_ID_KEY, crateId)
@@ -473,43 +468,48 @@ class DefCollector(
         val containingFile = PersistentFS.getInstance().findFileById(modData.fileId) ?: return
         val includePath = call.body
         val parentDirectory = containingFile.parent
-        runReadAction {
-            val includingFile = parentDirectory
-                .findFileByMaybeRelativePath(includePath)
-                ?.toPsiFile(project)
-                ?.rustFile
-            if (includingFile != null) {
-                processExpandedItems(modData, includingFile, call.depth + 1, calculateHash = true)
-            } else {
-                val filePath = parentDirectory.pathAsPath.resolve(includePath)
-                defMap.missedFiles.add(filePath)
-            }
+        val includingFile = parentDirectory
+            .findFileByMaybeRelativePath(includePath)
+            ?.toPsiFile(project)
+            ?.rustFile
+        if (includingFile != null) {
+            getModCollectorForExpandedElements(call)?.collectFileAndCalculateHash(includingFile)
+        } else {
+            val filePath = parentDirectory.pathAsPath.resolve(includePath)
+            defMap.missedFiles.add(filePath)
         }
     }
 
-    private fun processExpandedItems(
-        containingMod: ModData,
-        expandedFile: RsFile,
-        macroDepth: Int,
-        calculateHash: Boolean
-    ) {
-        if (macroDepth > DEFAULT_RECURSION_LIMIT) return
-
-        val onAddItem: (ModData, String, PerNs) -> Unit = { modData, name, perNs ->
-            val visibility = (perNs.types ?: perNs.values ?: perNs.macros)!!.visibility
-            update(modData, listOf(name to perNs), visibility, NAMED)
-        }
-        val collector = ModCollector(
-            modData = containingMod,
+    private fun getModCollectorForExpandedElements(call: MacroCallInfo): ModCollector? {
+        if (call.depth >= DEFAULT_RECURSION_LIMIT) return null
+        return ModCollector(
+            modData = call.containingMod,
             defMap = defMap,
             crateRoot = defMap.root,
             context = context,
-            macroDepth = macroDepth,
-            calculateHash = calculateHash,
-            onAddItem = onAddItem
+            macroDepth = call.depth + 1,
+            onAddItem = ::onAddItem
         )
-        collector.collectFile(expandedFile)
     }
+
+    private fun onAddItem(modData: ModData, name: String, perNs: PerNs) {
+        val visibility = (perNs.types ?: perNs.values ?: perNs.macros)!!.visibility
+        update(modData, listOf(name to perNs), visibility, NAMED)
+    }
+}
+
+private fun StubElement<*>.forEachTopLevelElement(action: (StubElement<*>) -> Unit) {
+    for (childStub in childrenStubs) {
+        action(childStub)
+        if (childStub is RsModItemStub || childStub is RsForeignModStub) {
+            childStub.forEachTopLevelElement(action)
+        }
+    }
+}
+
+private fun RsUseSpeckStub.getTopLevelPaths(): List<RsPathStub> {
+    val group = useGroup ?: return listOfNotNull(path)
+    return group.childrenStubs.flatMap { (it as RsUseSpeckStub).getTopLevelPaths() }
 }
 
 private class PerNsGlobImports {

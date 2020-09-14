@@ -11,8 +11,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.newvfs.persistent.FlushingDaemon
 import com.intellij.psi.FileViewProvider
-import com.intellij.psi.PsiManager
-import com.intellij.psi.SingleRootFileViewProvider
 import com.intellij.psi.impl.source.tree.FileElement
 import com.intellij.psi.stubs.*
 import com.intellij.testFramework.ReadOnlyLightVirtualFile
@@ -22,7 +20,6 @@ import com.intellij.util.io.DataExternalizer
 import com.intellij.util.io.IOUtil
 import com.intellij.util.io.KeyDescriptor
 import com.intellij.util.io.PersistentHashMap
-import org.rust.lang.RsFileType
 import org.rust.lang.RsLanguage
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.RsMacro
@@ -88,7 +85,7 @@ class MacroExpansionShared : Disposable {
         return cachedExpand(expander, def, call, hash)
     }
 
-    /** Cache passed as optimization for [createExpansionPsi] */
+    /** [hash] passed as optimization for [createExpansionStub] */
     fun cachedExpand(
         expander: MacroExpander,
         def: RsMacroDataWithHash,
@@ -125,12 +122,12 @@ class MacroExpansionShared : Disposable {
         }
     }
 
-    fun createExpansionPsi(
+    fun createExpansionStub(
         project: Project,
         expander: MacroExpander,
         def: RsMacroDataWithHash,
         call: RsMacroCallDataWithHash
-    ): Pair<RsFile, RangeMap>? {
+    ): Triple<CharSequence, RsFileStub, RangeMap>? {
         val hash = HashCode.mix(def.bodyHash ?: return null, call.bodyHash ?: return null)
         val (text, ranges) = cachedExpand(expander, def, call, hash) ?: return null
         val file = ReadOnlyLightVirtualFile("macro.rs", RsLanguage, text).apply {
@@ -139,11 +136,7 @@ class MacroExpansionShared : Disposable {
         val stub = cachedBuildStub(hash) {
             FileContentImpl(file, text, file.modificationStamp).also { it.project = project }
         } ?: return null
-
-        val psiManager = PsiManager.getInstance(project)
-        val viewProvider = SingleRootFileViewProvider(psiManager, file, true, RsFileType)
-        val psiFile = RsPreloadedStubPsiFile(viewProvider, StubTree(stub.stub as PsiFileStub<*>))
-        return Pair(psiFile, ranges)
+        return Triple(text, stub.stub as RsFileStub, ranges)
     }
 
     companion object {

@@ -104,12 +104,12 @@ fun buildDefMapContainingExplicitItems(
         crate.toString()
     )
 
-    val collector = ModCollector(crateRootData, defMap, crateRootData, context, calculateHash = true)
+    val collector = ModCollector(crateRootData, defMap, crateRootData, context)
     createExternCrateStdImport(crateRoot, crateRootData)?.let {
         context.imports += it
         collector.importExternCrateMacros(it.usePath)
     }
-    collector.collectFile(crateRoot)
+    collector.collectFileAndCalculateHash(crateRoot)
 
     removeInvalidImportsAndMacroCalls(defMap, context)
     // This is a workaround for some real-project cases. See:
@@ -163,8 +163,6 @@ class ModCollector(
     private val crateRoot: ModData,
     private val context: CollectorContext,
     private val macroDepth: Int = 0,
-    private val calculateHash: Boolean,
-    parentHashCalculator: HashCalculator? = null,
     /**
      * called when new [RsItemElement] is found
      * default behaviour: just add it to [ModData.visibleItems]
@@ -172,37 +170,35 @@ class ModCollector(
      * add it to [ModData.visibleItems] and propagate to modules which have glob import from [ModData]
      */
     private val onAddItem: (ModData, String, PerNs) -> Unit =
-        { containingMod, name, perNs -> containingMod.addVisibleItem(name, perNs) }
+        { containingMod, name, perNs -> containingMod.addVisibleItem(name, perNs) },
 ) : ModVisitor {
 
-    private var hashCalculator: HashCalculator? = parentHashCalculator
+    private var hashCalculator: HashCalculator? = null
 
     private val crate: Crate get() = context.crate
     private val project: Project get() = context.project
 
-    fun collectFile(file: RsFile) {
-        if (calculateHash) {
-            hashCalculator = HashCalculator()
-        }
-        collectMod(file.getStubOrBuild() ?: return)
-        if (calculateHash) {
-            val fileHash = hashCalculator!!.getFileHash()
-            defMap.addVisitedFile(file, modData, fileHash)
-        }
-
-        if (isUnitTestMode) {
-            modData.checkChildModulesAndVisibleItemsConsistency()
-        }
+    fun collectFileAndCalculateHash(file: RsFile) {
+        val hashCalculator = HashCalculator()
+        collectMod(file.getStubOrBuild() ?: return, hashCalculator)
+        val fileHash = hashCalculator.getFileHash()
+        defMap.addVisitedFile(file, modData, fileHash)
     }
 
-    private fun collectMod(mod: StubElement<out RsMod>) {
-        val visitor = if (calculateHash) {
-            val hashVisitor = hashCalculator!!.getVisitor(crate, modData.fileRelativePath)
+    fun collectExpandedElements(expandedFile: RsFileStub) = collectMod(expandedFile, null)
+
+    private fun collectMod(mod: StubElement<out RsMod>, hashCalculator: HashCalculator?) {
+        this.hashCalculator = hashCalculator
+        val visitor = if (hashCalculator != null) {
+            val hashVisitor = hashCalculator.getVisitor(crate, modData.fileRelativePath)
             CompositeModVisitor(hashVisitor, this)
         } else {
             this
         }
         ModCollectorBase.collectMod(mod, modData.isDeeplyEnabledByCfg, visitor, crate)
+        if (isUnitTestMode) {
+            modData.checkChildModulesAndVisibleItemsConsistency()
+        }
     }
 
     override fun collectImport(import: ImportLight) {
@@ -315,12 +311,10 @@ class ModCollector(
             defMap = defMap,
             crateRoot = crateRoot,
             context = context,
-            calculateHash = calculateHash || childMod is ChildMod.File,
-            parentHashCalculator = hashCalculator
         )
         when (childMod) {
-            is ChildMod.File -> collector.collectFile(childMod.file)
-            is ChildMod.Inline -> collector.collectMod(childMod.mod)
+            is ChildMod.File -> collector.collectFileAndCalculateHash(childMod.file)
+            is ChildMod.Inline -> collector.collectMod(childMod.mod, hashCalculator)
         }
         return childModData
     }
