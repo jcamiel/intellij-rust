@@ -334,7 +334,6 @@ class DefCollector(
             val defItem = perNs.resolvedDef.macros ?: return false
             defMap.defDatabase.getMacroInfo(defItem)
         }
-        // todo передавать `def.body` лениво, так как скорее всего оно не будет использоваться (если результат будет из кеша)
         val defData = RsMacroDataWithHash(RsMacroData(def.body), def.bodyHash)
         val callData = RsMacroCallDataWithHash(RsMacroCallData(call.body), call.bodyHash)
 
@@ -555,7 +554,8 @@ class MacroDefInfo(
     project: Project,
 ) {
     // todo profile & optimize (`lazy` overhead & RsPsiFactory creation)
-    val body: RsMacroBody? by lazy {
+    /** Lazy because usually it should not be used (thanks to macro expansion cache) */
+    val body: Lazy<RsMacroBody?> = lazy(LazyThreadSafetyMode.PUBLICATION) {
         val psiFactory = RsPsiFactory(project, markGenerated = false)
         psiFactory.createMacroBody(bodyText)
     }

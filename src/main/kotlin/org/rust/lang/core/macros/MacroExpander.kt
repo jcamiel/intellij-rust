@@ -121,12 +121,12 @@ private class NestingState(
     var atTheEnd: Boolean = false
 )
 
-class RsMacroData(val macroBodyStubbed: RsMacroBody?) {
-    constructor(def: RsMacro): this(def.macroBodyStubbed)
+class RsMacroData(val macroBody: Lazy<RsMacroBody?>) {
+    constructor(def: RsMacro) : this(lazy(LazyThreadSafetyMode.PUBLICATION) { def.macroBodyStubbed })
 }
 
 class RsMacroCallData(val macroBody: String?) {
-    constructor(call: RsMacroCall): this(call.macroBody)
+    constructor(call: RsMacroCall) : this(call.macroBody)
 }
 
 class MacroExpander(val project: Project) {
@@ -160,7 +160,7 @@ class MacroExpander(val project: Project) {
         val (macroCallBody, ranges) = project.createAdaptedRustPsiBuilder(call.macroBody ?: return null).lowerDocComments()
         macroCallBody.eof() // skip whitespace
         var start = macroCallBody.mark()
-        val macroCaseList = def.macroBodyStubbed?.macroCaseList ?: return null
+        val macroCaseList = def.macroBody.value?.macroCaseList ?: return null
 
         for (case in macroCaseList) {
             val subst = case.pattern.match(macroCallBody)
