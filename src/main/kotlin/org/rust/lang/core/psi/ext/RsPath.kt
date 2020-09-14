@@ -71,19 +71,6 @@ val RsPath.qualifier: RsPath?
         return (ctx as? RsUseSpeck)?.qualifier
     }
 
-// `use aaa::{bbb, ccc::{ddd1, ddd2}};`
-//                       ~~~~ this
-// returns "aaa::ccc::ddd1"
-val RsPath.fullPath: String
-    get() {
-        val segments = generateSequence(this) { it.qualifier }.toList()
-        val prefix = if (segments.last().hasColonColon) "::" else ""
-        return segments
-            .asReversed()
-            .joinToString("::", prefix = prefix) { it.referenceName }
-            .removeSuffix("::self")  // todo это ок?
-    }
-
 fun RsPath.allowedNamespaces(isCompletion: Boolean = false): Set<Namespace> = when (val parent = parent) {
     is RsPath, is RsTypeReference, is RsTraitRef, is RsStructLiteral, is RsPatStruct -> TYPES
     is RsUseSpeck -> when {

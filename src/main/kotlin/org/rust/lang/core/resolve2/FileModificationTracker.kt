@@ -8,10 +8,9 @@ package org.rust.lang.core.resolve2
 import com.intellij.util.io.DigestUtil
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.psi.RsFile
-import org.rust.lang.core.psi.RsMacro
-import org.rust.lang.core.psi.RsMacroCall
-import org.rust.lang.core.psi.ext.RsItemElement
-import org.rust.lang.core.psi.ext.RsMod
+import org.rust.lang.core.stubs.RsMacroCallStub
+import org.rust.lang.core.stubs.RsModItemStub
+import org.rust.lang.core.stubs.RsNamedStub
 import org.rust.openapiext.fileId
 import org.rust.stdext.HashCode
 import java.io.DataOutput
@@ -38,7 +37,11 @@ fun isFileChanged(file: RsFile, defMap: CrateDefMap, crate: Crate): Boolean {
         fileRelativePath = "",
         collectChildModules = true
     )
-    ModCollectorBase.collectMod(file, isDeeplyEnabledByCfg, visitor, crate)
+    val fileStub = file.getStubOrBuild() ?: return false
+    ModCollectorBase.collectMod(fileStub, isDeeplyEnabledByCfg, visitor, crate)
+    if (file.virtualFile == crate.rootModFile) {
+        visitor.modData.attributes = file.attributes
+    }
     return hashCalculator.getFileHash() != fileInfo.hash
 }
 
@@ -107,12 +110,12 @@ private class ModLightCollector(
     private val collectChildModules: Boolean = false,
 ) : ModVisitor {
 
-    private val modData: ModDataLight = ModDataLight()
+    val modData: ModDataLight = ModDataLight()
 
-    override fun collectItem(item: ItemLight, itemPsi: RsItemElement) {
+    override fun collectItem(item: ItemLight, stub: RsNamedStub) {
         modData.items += item
-        if (collectChildModules && itemPsi is RsMod) {
-            collectMod(itemPsi, item.name, item.isDeeplyEnabledByCfg)
+        if (collectChildModules && stub is RsModItemStub) {
+            collectMod(stub, item.name, item.isDeeplyEnabledByCfg)
         }
     }
 
@@ -120,24 +123,20 @@ private class ModLightCollector(
         modData.imports += import
     }
 
-    override fun collectMacroCall(call: MacroCallLight, callPsi: RsMacroCall) {
+    override fun collectMacroCall(call: MacroCallLight, stub: RsMacroCallStub) {
         modData.macroCalls += call
     }
 
-    override fun collectMacroDef(def: MacroDefLight, defPsi: RsMacro) {
+    override fun collectMacroDef(def: MacroDefLight) {
         modData.macroDefs += def
     }
 
-    override fun afterCollectMod(mod: RsMod) {
-        if (mod is RsFile && mod.virtualFile == crate.rootModFile) {
-            modData.attributes = mod.attributes
-        }
-
+    override fun afterCollectMod() {
         val fileHash = calculateModHash(modData)
         hashCalculator.onCollectMod(fileRelativePath, fileHash)
     }
 
-    private fun collectMod(mod: RsMod, modName: String, isDeeplyEnabledByCfg: Boolean) {
+    private fun collectMod(mod: RsModItemStub, modName: String, isDeeplyEnabledByCfg: Boolean) {
         val fileRelativePath = "$fileRelativePath::$modName"
         val visitor = ModLightCollector(
             crate,

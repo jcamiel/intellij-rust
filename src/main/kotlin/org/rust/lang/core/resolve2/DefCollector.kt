@@ -10,20 +10,21 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.newvfs.persistent.PersistentFS
+import com.intellij.psi.StubBasedPsiElement
+import com.intellij.psi.stubs.StubElement
 import com.intellij.util.SmartList
 import com.intellij.util.io.IOUtil
 import org.rust.lang.core.crate.CratePersistentId
 import org.rust.lang.core.macros.*
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.body
-import org.rust.lang.core.psi.ext.bodyTextRange
-import org.rust.lang.core.psi.ext.stubDescendantsOfTypeStrict
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
 import org.rust.lang.core.resolve2.ImportType.GLOB
 import org.rust.lang.core.resolve2.ImportType.NAMED
 import org.rust.lang.core.resolve2.PartialResolvedImport.*
 import org.rust.lang.core.resolve2.Visibility.Invisible
+import org.rust.lang.core.stubs.RsMacroCallStub
+import org.rust.lang.core.stubs.RsUseItemStub
 import org.rust.openapiext.findFileByMaybeRelativePath
 import org.rust.openapiext.pathAsPath
 import org.rust.openapiext.testAssert
@@ -333,31 +334,31 @@ class DefCollector(
             val defItem = perNs.resolvedDef.macros ?: return false
             defMap.defDatabase.getMacroInfo(defItem)
         }
+        // todo передавать `def.body` лениво, так как скорее всего оно не будет использоваться (если результат будет из кеша)
         val defData = RsMacroDataWithHash(RsMacroData(def.body), def.bodyHash)
         val callData = RsMacroCallDataWithHash(RsMacroCallData(call.body), call.bodyHash)
-        return runReadAction {
-            val useExpansionCache = true
-            val (expandedText, expandedFile, ranges) = if (useExpansionCache) {
-                val (expandedFile, ranges) = macroExpanderShared.createExpansionPsi(project, macroExpander, defData, callData)
-                    ?: return@runReadAction true
-                Triple(expandedFile.text, expandedFile, ranges)
-            } else {
-                val psiFactory = RsPsiFactory(project)
-                val (expandedText, ranges) = macroExpander.expandMacroAsText(defData.data, callData.data)
-                    ?: return@runReadAction true
-                val expansion = parseExpandedTextWithContext(MacroExpansionContext.ITEM, psiFactory, expandedText)
-                    ?: return@runReadAction true
-                Triple(expandedText, expansion.file, ranges)
-            }
 
-            processDollarCrate(call, def, expandedText, ranges, expandedFile)
-
-            // Note: we don't need to call [RsExpandedElement.setContext] for [expansion.elements],
-            // because it is needed only for [RsModDeclItem], and we use our own resolve for [RsModDeclItem]
-
-            processExpandedItems(call.containingMod, expandedFile, call.depth + 1, calculateHash = false)
-            true
+        val useExpansionCache = true
+        val (expandedText, expandedFile, ranges) = if (useExpansionCache) {
+            val (expandedFile, ranges) = macroExpanderShared.createExpansionPsi(project, macroExpander, defData, callData)
+                ?: return true
+            Triple(expandedFile.text, expandedFile, ranges)
+        } else {
+            val psiFactory = RsPsiFactory(project)
+            val (expandedText, ranges) = macroExpander.expandMacroAsText(defData.data, callData.data)
+                ?: return true
+            val expansion = parseExpandedTextWithContext(MacroExpansionContext.ITEM, psiFactory, expandedText)
+                ?: return true
+            Triple(expandedText, expansion.file, ranges)
         }
+
+        processDollarCrate(call, def, expandedText, ranges, expandedFile)
+
+        // Note: we don't need to call [RsExpandedElement.setContext] for [expansion.elements],
+        // because it is needed only for [RsModDeclItem], and we use our own resolve for [RsModDeclItem]
+
+        processExpandedItems(call.containingMod, expandedFile, call.depth + 1, calculateHash = false)
+        return true
     }
 
     /**
@@ -406,14 +407,15 @@ class DefCollector(
         // todo: оптимизация - написать свой stubDescendantsOfTypeStrict, которой не заходит внутрь RsItemElement
         //  то есть обрабатывает top level items и заходит внутри RsMod
         // todo оптимизация: mapOffsetFromExpansionToCallBody работает за линию, мб можно за log
-        for (element in file.stubDescendantsOfTypeStrict<RsElement>()) {
+        for (elementPsi in file.stubDescendantsOfTypeStrict<RsElement>()) {
+            val element = (elementPsi as StubBasedPsiElement<*>).greenStub as StubElement<out RsElement>
             if (rangesInFile.isNotEmpty()) {
                 processDollarCrateInsideExpandedElement(element, rangesInFile)
             }
 
-            if (def.hasLocalInnerMacros && element is RsMacroCall) {
+            if (def.hasLocalInnerMacros && element is RsMacroCallStub) {
                 val path = element.path
-                val pathOffsetInExpansion = path.stub.startOffset
+                val pathOffsetInExpansion = path.startOffset
                 val pathOffsetInCall = ranges.mapOffsetFromExpansionToCallBody(pathOffsetInExpansion)
                 val isExpandedFromDef = pathOffsetInCall === null
                 if (isExpandedFromDef) {
@@ -427,7 +429,7 @@ class DefCollector(
     // - UseItem - если начинается с $crate
     // - MacroCall - если начинается с $crate или если body содержит $crate
     // - Macro - если body содержит $crate
-    private fun processDollarCrateInsideExpandedElement(element: RsElement, rangesInFile: Map<Int, CratePersistentId>) {
+    private fun processDollarCrateInsideExpandedElement(element: StubElement<out RsElement>, rangesInFile: Map<Int, CratePersistentId>) {
         fun filterRangesInside(range: TextRange): Map<Int, CratePersistentId> =
             rangesInFile.filterKeys { indexInFile ->
                 val rangeInFile = TextRange(indexInFile, indexInFile + MACRO_DOLLAR_CRATE_IDENTIFIER.length)
@@ -435,16 +437,16 @@ class DefCollector(
             }
 
         when (element) {
-            is RsUseItem -> {
+            is RsUseItemStub -> {
                 // expandedText = 'use $crate::foo;'
                 // TODO: `use {$crate::foo, $crate::bar};` - `$crate` may come from different macros
-                val crateId = element.stubDescendantsOfTypeStrict<RsPath>()
+                val crateId = element.psi.stubDescendantsOfTypeStrict<RsPath>()
                     .mapNotNull { rangesInFile[it.stub.startOffset] }
                     .distinct().singleOrNull()
                     ?: return
                 element.putUserData(RESOLVE_DOLLAR_CRATE_ID_KEY, crateId)
             }
-            is RsMacroCall -> {
+            is RsMacroCallStub -> {
                 // expandedText = 'foo! { ... $crate ... }'
                 run {
                     val macroRangeInFile = element.bodyTextRange ?: return@run
@@ -459,8 +461,9 @@ class DefCollector(
 
                 // expandedText = '$crate::foo! { ... }'
                 run {
-                    val crateId = rangesInFile[element.path.stub.startOffset] ?: return@run
-                    element.path.putUserData(RESOLVE_DOLLAR_CRATE_ID_KEY, crateId)
+                    val path = element.path
+                    val crateId = rangesInFile[path.startOffset] ?: return@run
+                    path.putUserData(RESOLVE_DOLLAR_CRATE_ID_KEY, crateId)
                 }
             }
         }
@@ -546,10 +549,17 @@ sealed class PartialResolvedImport {
 class MacroDefInfo(
     val crate: CratePersistentId,
     val path: ModPath,
-    val body: RsMacroBody,
+    val bodyText: String,
     val bodyHash: HashCode,
     val hasLocalInnerMacros: Boolean,
-)
+    project: Project,
+) {
+    // todo profile & optimize (`lazy` overhead & RsPsiFactory creation)
+    val body: RsMacroBody? by lazy {
+        val psiFactory = RsPsiFactory(project, markGenerated = false)
+        psiFactory.createMacroBody(bodyText)
+    }
+}
 
 class MacroCallInfo(
     val containingMod: ModData,

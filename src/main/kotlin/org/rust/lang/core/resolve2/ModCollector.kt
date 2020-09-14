@@ -12,6 +12,8 @@ import com.intellij.openapi.vfs.newvfs.persistent.PersistentFS
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiFile
+import com.intellij.psi.stubs.StubElement
+import com.intellij.psi.stubs.StubTreeLoader
 import org.rust.cargo.project.workspace.CargoWorkspace.Edition.EDITION_2015
 import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
@@ -20,15 +22,17 @@ import org.rust.lang.RsFileType
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.macros.RangeMap
 import org.rust.lang.core.macros.shouldIndexFile
-import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.RsFile
+import org.rust.lang.core.psi.RsModDeclItem
 import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.psi.rustFile
 import org.rust.lang.core.resolve.RsModDeclItemData
 import org.rust.lang.core.resolve.collectResolveVariants
 import org.rust.lang.core.resolve.namespaces
 import org.rust.lang.core.resolve.processModDeclResolveVariants
+import org.rust.lang.core.stubs.*
 import org.rust.openapiext.*
 import java.nio.file.Path
-import kotlin.test.assertEquals
 
 // todo move to facade ?
 class CollectorContext(
@@ -180,7 +184,7 @@ class ModCollector(
         if (calculateHash) {
             hashCalculator = HashCalculator()
         }
-        collectMod(file)
+        collectMod(file.getStubOrBuild() ?: return)
         if (calculateHash) {
             val fileHash = hashCalculator!!.getFileHash()
             defMap.addVisitedFile(file, modData, fileHash)
@@ -191,7 +195,7 @@ class ModCollector(
         }
     }
 
-    private fun collectMod(mod: RsMod) {
+    private fun collectMod(mod: StubElement<out RsMod>) {
         val visitor = if (calculateHash) {
             val hashVisitor = hashCalculator!!.getVisitor(crate, modData.fileRelativePath)
             CompositeModVisitor(hashVisitor, this)
@@ -225,14 +229,13 @@ class ModCollector(
         }
     }
 
-    override fun collectItem(item: ItemLight, itemPsi: RsItemElement) {
+    override fun collectItem(item: ItemLight, stub: RsNamedStub) {
         val name = item.name
-        if (itemPsi !is RsNamedElement) return
 
         // could be null if `.resolve()` on `RsModDeclItem` returns null
-        val childModData = tryCollectChildModule(item, itemPsi)
+        val childModData = tryCollectChildModule(item, stub)
 
-        val visItem = convertToVisItem(item, itemPsi) ?: return
+        val visItem = convertToVisItem(item, stub) ?: return
         val perNs = PerNs(visItem, item.namespaces)
         if (visItem.isModOrEnum && childModData === null) {
             perNs.types = null
@@ -246,33 +249,35 @@ class ModCollector(
         }
     }
 
-    // todo причём здесь RsFile ?
-    /** [name] passed for performance reason, because [RsFile.modName] is slow */
-    private fun convertToVisItem(item: ItemLight, itemPsi: RsItemElement): VisItem? {
+    private fun convertToVisItem(item: ItemLight, stub: RsNamedStub): VisItem? {
         val visibility = convertVisibility(item.visibility, item.isDeeplyEnabledByCfg)
         val itemPath = modData.path.append(item.name)
-        val isModOrEnum = itemPsi is RsMod || itemPsi is RsModDeclItem || itemPsi is RsEnumItem
+        val isModOrEnum = stub is RsModItemStub || stub is RsModDeclItemStub || stub is RsEnumItemStub
         return VisItem(itemPath, visibility, isModOrEnum)
     }
 
-    private fun tryCollectChildModule(itemLight: ItemLight, item: RsItemElement): ModData? {
-        if (item is RsEnumItem) return collectEnumAsModData(itemLight, item)
+    private fun tryCollectChildModule(item: ItemLight, stub: RsNamedStub): ModData? {
+        if (stub is RsEnumItemStub) return collectEnumAsModData(item, stub)
 
-        val (childMod, hasMacroUse, pathAttribute) = when (item) {
-            is RsModItem -> Triple(item, item.hasMacroUse, item.pathAttribute)
-            is RsModDeclItem -> {
-                val (childMod, childModPossiblePaths) = item.resolveAndGetPossiblePaths(modData, project)
+        val (childMod, hasMacroUse, pathAttribute) = when (stub) {
+            is RsModItemStub -> {
+                val childMod = ChildMod.Inline(stub, item.name, project)
+                Triple(childMod, stub.hasMacroUse, stub.pathAttribute)
+            }
+            is RsModDeclItemStub -> {
+                val (childModPsi, childModPossiblePaths) = stub.resolveAndGetPossiblePaths(modData, project)
                     ?: return null
-                if (childMod === null) {
+                if (childModPsi === null) {
                     defMap.missedFiles += childModPossiblePaths
                     return null
                 }
-                Triple(childMod as RsMod, item.hasMacroUse, item.pathAttribute)
+                val childMod = ChildMod.File(childModPsi, item.name, project)
+                Triple(childMod, stub.hasMacroUse, stub.pathAttribute)
             }
             else -> return null
         }
-        val isDeeplyEnabledByCfg = itemLight.isDeeplyEnabledByCfg
-        val childModData = collectChildModule(childMod, itemLight.name, isDeeplyEnabledByCfg, pathAttribute)
+        val isDeeplyEnabledByCfg = item.isDeeplyEnabledByCfg
+        val childModData = collectChildModule(childMod, item.name, isDeeplyEnabledByCfg, pathAttribute)
         if (hasMacroUse && isDeeplyEnabledByCfg) modData.legacyMacros += childModData.legacyMacros
         return childModData
     }
@@ -282,17 +287,16 @@ class ModCollector(
      * if mod declaration is expanded from macro, then [RsFile.declaration] will be null
      */
     private fun collectChildModule(
-        childMod: RsMod,
+        childMod: ChildMod,
         childModName: String,
         isDeeplyEnabledByCfg: Boolean,
         pathAttribute: String?
     ): ModData {
         context.indicator.checkCanceled()
         val childModPath = modData.path.append(childModName)
-        val (fileId, fileRelativePath) = if (childMod is RsFile) {
-            childMod.virtualFile.fileId to ""
-        } else {
-            modData.fileId to "${modData.fileRelativePath}::$childModName"
+        val (fileId, fileRelativePath) = when (childMod) {
+            is ChildMod.File -> childMod.file.virtualFile.fileId to ""
+            is ChildMod.Inline -> modData.fileId to "${modData.fileRelativePath}::$childModName"
         }
         val childModData = ModData(
             parent = modData,
@@ -311,18 +315,17 @@ class ModCollector(
             defMap = defMap,
             crateRoot = crateRoot,
             context = context,
-            calculateHash = calculateHash || childMod is RsFile,
+            calculateHash = calculateHash || childMod is ChildMod.File,
             parentHashCalculator = hashCalculator
         )
-        if (childMod is RsFile) {
-            collector.collectFile(childMod)
-        } else {
-            collector.collectMod(childMod)
+        when (childMod) {
+            is ChildMod.File -> collector.collectFile(childMod.file)
+            is ChildMod.Inline -> collector.collectMod(childMod.mod)
         }
         return childModData
     }
 
-    private fun collectEnumAsModData(enum: ItemLight, enumPsi: RsEnumItem): ModData {
+    private fun collectEnumAsModData(enum: ItemLight, enumStub: RsEnumItemStub): ModData {
         val enumName = enum.name
         val enumPath = modData.path.append(enumName)
         val enumData = ModData(
@@ -335,7 +338,7 @@ class ModCollector(
             ownedDirectoryId = modData.ownedDirectoryId,  // actually can use any value here
             isEnum = true
         )
-        for (variantPsi in enumPsi.variants) {
+        for (variantPsi in enumStub.variants) {
             val variantName = variantPsi.name ?: continue
             val variantPath = enumPath.append(variantName)
             val isVariantDeeplyEnabledByCfg = enumData.isDeeplyEnabledByCfg && variantPsi.isEnabledByCfgSelf(crate)
@@ -346,20 +349,20 @@ class ModCollector(
         return enumData
     }
 
-    override fun collectMacroCall(call: MacroCallLight, callPsi: RsMacroCall) {
+    override fun collectMacroCall(call: MacroCallLight, stub: RsMacroCallStub) {
         check(modData.isDeeplyEnabledByCfg) { "for performance reasons cfg-disabled macros should not be collected" }
-        val bodyHash = callPsi.bodyHash
+        val bodyHash = call.bodyHash
         if (bodyHash === null && call.path != "include") return
         val macroDef = if (call.path.contains("::")) null else modData.legacyMacros[call.path]
-        val dollarCrateMap = callPsi.getUserData(RESOLVE_RANGE_MAP_KEY) ?: RangeMap.EMPTY
+        val dollarCrateMap = stub.getUserData(RESOLVE_RANGE_MAP_KEY) ?: RangeMap.EMPTY
         context.macroCalls += MacroCallInfo(modData, call.path, call.body, bodyHash, macroDepth, macroDef, dollarCrateMap)
     }
 
-    override fun collectMacroDef(def: MacroDefLight, defPsi: RsMacro) {
-        val bodyHash = defPsi.bodyHash ?: return
+    override fun collectMacroDef(def: MacroDefLight) {
+        val bodyHash = def.bodyHash ?: return
         val macroPath = modData.path.append(def.name)
 
-        val defInfo = MacroDefInfo(modData.crate, macroPath, def.macroBody, bodyHash, def.hasLocalInnerMacros)
+        val defInfo = MacroDefInfo(modData.crate, macroPath, def.body, bodyHash, def.hasLocalInnerMacros, project)
         modData.legacyMacros[def.name] = defInfo
 
         if (def.hasMacroExport) {
@@ -376,6 +379,13 @@ class ModCollector(
             is VisibilityLight.Restricted -> resolveRestrictedVisibility(visibility.inPath, crateRoot, modData)
         }
     }
+}
+
+fun RsFile.getStubOrBuild(): RsFileStub? {
+    val stubTree = greenStubTree ?: StubTreeLoader.getInstance().readOrBuild(project, virtualFile, this)
+    val stub = stubTree?.root as? RsFileStub
+    if (stub === null) RESOLVE_LOG.error("No stub for file ${virtualFile.path}")
+    return stub
 }
 
 private fun createExternCrateStdImport(crateRoot: RsFile, crateRootData: ModData): Import? {
@@ -425,7 +435,7 @@ private fun resolveRestrictedVisibility(
 
 private fun ModData.checkChildModulesAndVisibleItemsConsistency() {
     for ((name, childMod) in childModules) {
-        assertEquals(name, childMod.name, "Inconsistent name of $childMod")
+        check(name == childMod.name) { "Inconsistent name of $childMod" }
         check(visibleItems[name]?.types?.isModOrEnum == true)
         { "Inconsistent `visibleItems` and `childModules` in $this for name $name" }
     }
@@ -447,8 +457,7 @@ private fun ModData.asPsiFile(project: Project): PsiFile? =
             return null
         }
 
-private fun RsModDeclItem.resolveAndGetPossiblePaths(containingModData: ModData, project: Project): Pair<RsFile?, List<Path>>? {
-    val pathAttribute = pathAttribute
+private fun RsModDeclItemStub.resolveAndGetPossiblePaths(containingModData: ModData, project: Project): Pair<RsFile?, List<Path>>? {
     val (parentDirectory, names) = if (pathAttribute === null) {
         val name = name ?: return null
         val parentDirectory = containingModData.getOwnedDirectory(project) ?: return null
@@ -511,23 +520,28 @@ private fun RsModDeclItem.resolve(modData: ModData, project: Project): RsFile? {
     return files.singleOrNull() as RsFile?
 }
 
+private sealed class ChildMod(val name: String, val project: Project) {
+    class Inline(val mod: RsModItemStub, name: String, project: Project) : ChildMod(name, project)
+    class File(val file: RsFile, name: String, project: Project) : ChildMod(name, project)
+}
+
 /**
  * Have to pass [pathAttribute], because [RsFile.pathAttribute] triggers resolve.
  * See also: [RsMod.getOwnedDirectory]
  */
-private fun RsMod.getOwnedDirectory(parentMod: ModData, pathAttribute: String?): PsiDirectory? {
-    if (this is RsFile && name == RsConstants.MOD_RS_FILE) return parent
+private fun ChildMod.getOwnedDirectory(parentMod: ModData, pathAttribute: String?): PsiDirectory? {
+    if (this is ChildMod.File && name == RsConstants.MOD_RS_FILE) return file.parent
 
     val (parentDirectory, path) = if (pathAttribute != null) {
         when {
-            this is RsFile -> return parent
+            this is ChildMod.File -> return file.parent
             parentMod.isRsFile -> parentMod.asPsiFile(project)?.parent to pathAttribute
             else -> parentMod.getOwnedDirectory(project) to pathAttribute
         }
     } else {
         parentMod.getOwnedDirectory(project) to name
     }
-    if (parentDirectory === null || path === null) return null
+    if (parentDirectory === null) return null
 
     // Don't use `FileUtil#getNameWithoutExtension` to correctly process relative paths like `./foo`
     val directoryPath = FileUtil.toSystemIndependentName(path).removeSuffix(".${RsFileType.defaultExtension}")

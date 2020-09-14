@@ -5,6 +5,7 @@
 
 package org.rust.stdext
 
+import com.intellij.util.io.DataInputOutputUtil
 import com.intellij.util.io.DigestUtil
 import org.apache.commons.codec.binary.Hex
 import java.io.*
@@ -68,3 +69,6 @@ fun DataInput.readHashCode(): HashCode {
     readFully(bytes)
     return HashCode.fromByteArray(bytes)
 }
+
+fun DataOutput.writeHashCodeAsNullable(value: HashCode?) = DataInputOutputUtil.writeNullable(this, value, this::writeHashCode)
+fun DataInput.readHashCodeAsNullable(): HashCode? = DataInputOutputUtil.readNullable(this, this::readHashCode)

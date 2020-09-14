@@ -61,15 +61,20 @@ val RsMacroCall.bodyTextRange: TextRange?
     get() {
         val stub = greenStub
         return if (stub != null) {
-            val bodyStartOffset = stub.bodyStartOffset
-            val macroBody = stub.macroBody
-            if (bodyStartOffset != -1 && macroBody != null) {
-                TextRange(bodyStartOffset, bodyStartOffset + macroBody.length)
-            } else {
-                null
-            }
+            stub.bodyTextRange
         } else {
             macroArgumentElement?.textRange?.let { TextRange(it.startOffset + 1, it.endOffset - if (it.length == 1) 0 else 1) }
+        }
+    }
+
+val RsMacroCallStub.bodyTextRange: TextRange?
+    get() {
+        val bodyStartOffset = bodyStartOffset
+        val macroBody = macroBody
+        return if (bodyStartOffset != -1 && macroBody != null) {
+            TextRange(bodyStartOffset, bodyStartOffset + macroBody.length)
+        } else {
+            null
         }
     }
 
@@ -123,10 +128,14 @@ fun RsMacroCall.findIncludingFile(): RsFile? {
 }
 
 val RsMacroCall.bodyHash: HashCode?
-    get() = CachedValuesManager.getCachedValue(this) {
-        val body = macroBody
-        val hash = body?.let { HashCode.compute(it) }
-        CachedValueProvider.Result.create(hash, modificationTracker)
+    get() {
+        val stub = greenStub
+        if (stub != null) return stub.bodyHash
+        return CachedValuesManager.getCachedValue(this) {
+            val body = macroBody
+            val hash = body?.let { HashCode.compute(it) }
+            CachedValueProvider.Result.create(hash, modificationTracker)
+        }
     }
 
 fun RsMacroCall.resolveToMacro(): RsMacro? =

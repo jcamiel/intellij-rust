@@ -9,6 +9,7 @@ import com.intellij.extapi.psi.StubBasedPsiElementBase
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.psi.NavigatablePsiElement
 import com.intellij.psi.PsiElement
+import com.intellij.psi.stubs.StubElement
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.resolve2.CrateDefMap
@@ -216,6 +217,14 @@ fun RsDocAndAttributeOwner.isEnabledByCfgSelf(crate: Crate): Boolean =
 val RsDocAndAttributeOwner.isCfgUnknownSelf: Boolean
     get() = evaluateCfg() == ThreeValuedLogic.Unknown
 
+// todo ?
+fun RsAttributeOwnerStub.isEnabledByCfgSelf(crate: Crate): Boolean {
+    if (!hasCfg) return true
+    // todo ?
+    val psi = (this as StubElement<*>).psi as RsDocAndAttributeOwner
+    return psi.evaluateCfg(crate) != ThreeValuedLogic.False
+}
+
 /**
  * [crateOrNull] is passed because it is used in Resolve2 during building [CrateDefMap]
  * so we can't use [containingCrate] because it will traverse [superMods],
@@ -230,7 +239,6 @@ private fun RsDocAndAttributeOwner.evaluateCfg(crateOrNull: Crate? = null): Thre
     if (attributeStub?.hasCfg == false) return ThreeValuedLogic.True
 
     val queryAttributes = queryAttributes
-    if (queryAttributes === QueryAttributes.EMPTY) return ThreeValuedLogic.True
     val cfgAttributes = queryAttributes.cfgAttributes
 
     // TODO: When we open both cargo projects for an application and a library,

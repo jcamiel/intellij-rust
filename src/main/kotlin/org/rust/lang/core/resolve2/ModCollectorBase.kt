@@ -5,15 +5,23 @@
 
 package org.rust.lang.core.resolve2
 
+import com.intellij.psi.PsiElement
+import com.intellij.psi.stubs.IStubElementType
+import com.intellij.psi.stubs.StubElement
 import com.intellij.util.io.IOUtil
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.crate.CratePersistentId
 import org.rust.lang.core.macros.MACRO_DOLLAR_CRATE_IDENTIFIER
-import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.RsElementTypes.INCLUDE_MACRO_ARGUMENT
+import org.rust.lang.core.psi.RsForeignModItem
+import org.rust.lang.core.psi.RsIncludeMacroArgument
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.namespaces
+import org.rust.lang.core.stubs.*
 import org.rust.openapiext.testAssert
+import org.rust.stdext.HashCode
+import org.rust.stdext.writeHashCodeAsNullable
 import java.io.DataOutput
 
 /**
@@ -29,37 +37,38 @@ class ModCollectorBase private constructor(
 ) {
 
     /** [itemsOwner] - [RsMod] or [RsForeignModItem] */
-    private fun collectElements(itemsOwner: RsItemsOwner) {
-        val items = itemsOwner.itemsAndMacros.toList()
+    private fun collectElements(itemsOwner: StubElement<out RsItemsOwner>) {
+        val items = itemsOwner.childrenStubs
 
         // This should be processed eagerly instead of deferred to resolving.
         // `#[macro_use] extern crate` is hoisted to import macros before collecting any other items.
         for (item in items) {
-            if (item is RsExternCrateItem) {
+            if (item is RsExternCrateItemStub) {
                 collectExternCrate(item)
             }
         }
         for (item in items) {
-            if (item !is RsExternCrateItem) {
+            if (item !is RsExternCrateItemStub) {
                 collectElement(item)
             }
         }
     }
 
-    private fun collectElement(element: RsElement) {
+    private fun collectElement(element: StubElement<out PsiElement>) {
         when (element) {
             // impls are not named elements, so we don't need them for name resolution
-            is RsImplItem -> Unit
+            is RsImplItemStub -> Unit
 
-            is RsForeignModItem -> collectElements(element)
+            is RsForeignModStub -> collectElements(element)
 
-            is RsUseItem -> collectUseItem(element)
-            is RsExternCrateItem -> error("extern crates are processed eagerly")
+            is RsUseItemStub -> collectUseItem(element)
+            is RsExternCrateItemStub -> error("extern crates are processed eagerly")
 
-            is RsItemElement -> collectItem(element)
+            is RsMacroCallStub -> collectMacroCall(element)
+            is RsMacroStub -> collectMacroDef(element)
 
-            is RsMacroCall -> collectMacroCall(element)
-            is RsMacro -> collectMacroDef(element)
+            // Should be after macro stubs (they are [RsNamedStub])
+            is RsNamedStub -> collectItem(element)
 
             // `RsOuterAttr`, `RsInnerAttr` or `RsVis` when `itemsOwner` is `RsModItem`
             // `RsExternAbi` when `itemsOwner` is `RsForeignModItem`
@@ -68,7 +77,7 @@ class ModCollectorBase private constructor(
         }
     }
 
-    private fun collectUseItem(useItem: RsUseItem) {
+    private fun collectUseItem(useItem: RsUseItemStub) {
         val visibility = VisibilityLight.from(useItem)
         val hasPreludeImport = useItem.hasPreludeImport
         // todo move dollarCrateId from RsUseItem to RsPath
@@ -87,9 +96,9 @@ class ModCollectorBase private constructor(
         }
     }
 
-    private fun collectExternCrate(externCrate: RsExternCrateItem) {
+    private fun collectExternCrate(externCrate: RsExternCrateItemStub) {
         val import = ImportLight(
-            usePath = externCrate.referenceName,
+            usePath = externCrate.name,
             nameInScope = externCrate.nameWithAlias,
             visibility = VisibilityLight.from(externCrate),
             isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && externCrate.isEnabledByCfgSelf(crate),
@@ -100,66 +109,73 @@ class ModCollectorBase private constructor(
         visitor.collectImport(import)
     }
 
-    private fun collectItem(item: RsItemElement) {
+    private fun collectItem(item: RsNamedStub) {
         val name = item.name ?: return
-        if (item !is RsNamedElement) return
-        if (item is RsFunction && item.isProcMacroDef) return  // todo proc macros
+        if (item !is RsAttributeOwnerStub) return
+        if (item is RsFunctionStub && item.isProcMacroDef) return  // todo proc macros
+        @Suppress("UNCHECKED_CAST")  // todo
         val itemLight = ItemLight(
             name = name,
-            visibility = VisibilityLight.from(item),
+            visibility = VisibilityLight.from(item as StubElement<out RsVisibilityOwner>),
             isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && item.isEnabledByCfgSelf(crate),
             namespaces = item.namespaces
         )
         visitor.collectItem(itemLight, item)
     }
 
-    private fun collectMacroCall(call: RsMacroCall) {
+    private fun collectMacroCall(call: RsMacroCallStub) {
+        fun RsMacroCallStub.getIncludeMacroArgument(): String? {
+            // todo как-нибудь покрасивее??
+            val includeMacroArgument = findChildStubByType(INCLUDE_MACRO_ARGUMENT as IStubElementType<*, *>)
+                ?: return null
+            return (includeMacroArgument.psi as RsIncludeMacroArgument).expr?.getValue(crate)
+        }
+
         val isCallDeeplyEnabledByCfg = isDeeplyEnabledByCfg && call.isEnabledByCfgSelf(crate)
         if (!isCallDeeplyEnabledByCfg) return
-        val body = call.includeMacroArgument?.expr?.getValue(crate) ?: call.macroBody ?: return
-        val path = getMacroCallPath(call)
-        val callLight = MacroCallLight(path, body)
+        val body = call.getIncludeMacroArgument() ?: call.macroBody ?: return
+        val path = getMacroCallPath(call.path)
+        val callLight = MacroCallLight(path, body, call.bodyHash)
         visitor.collectMacroCall(callLight, call)
     }
 
-    private fun collectMacroDef(def: RsMacro) {
-        // check(def.stub != null)  // todo
+    private fun collectMacroDef(def: RsMacroStub) {
         val isDefDeeplyEnabledByCfg = isDeeplyEnabledByCfg && def.isEnabledByCfgSelf(crate)
-        if (!isDefDeeplyEnabledByCfg) return  // todo
+        if (!isDefDeeplyEnabledByCfg) return
         val defLight = MacroDefLight(
             name = def.name ?: return,
-            macroBodyText = def.greenStub?.macroBody ?: def.macroBodyStubbed?.text ?: return,
-            macroBody = def.macroBodyStubbed ?: return,
+            body = def.macroBody ?: return,
+            bodyHash = def.bodyHash,
             hasMacroExport = def.hasMacroExport,
             hasLocalInnerMacros = def.hasMacroExportLocalInnerMacros
         )
-        visitor.collectMacroDef(defLight, def)
+        visitor.collectMacroDef(defLight)
     }
 
     companion object {
-        fun collectMod(mod: RsMod, isDeeplyEnabledByCfg: Boolean, visitor: ModVisitor, crate: Crate) {
+        fun collectMod(mod: StubElement<out RsMod>, isDeeplyEnabledByCfg: Boolean, visitor: ModVisitor, crate: Crate) {
             val collector = ModCollectorBase(visitor, crate, isDeeplyEnabledByCfg)
             collector.collectElements(mod)
-            collector.visitor.afterCollectMod(mod)
+            collector.visitor.afterCollectMod()
         }
     }
 }
 
 interface ModVisitor {
-    fun collectItem(item: ItemLight, itemPsi: RsItemElement)
+    fun collectItem(item: ItemLight, stub: RsNamedStub)
     fun collectImport(import: ImportLight)
-    fun collectMacroCall(call: MacroCallLight, callPsi: RsMacroCall)
-    fun collectMacroDef(def: MacroDefLight, defPsi: RsMacro)
-    fun afterCollectMod(mod: RsMod) {}
+    fun collectMacroCall(call: MacroCallLight, stub: RsMacroCallStub)
+    fun collectMacroDef(def: MacroDefLight)
+    fun afterCollectMod() {}
 }
 
 class CompositeModVisitor(
     private val visitor1: ModVisitor,
     private val visitor2: ModVisitor,
 ) : ModVisitor {
-    override fun collectItem(item: ItemLight, itemPsi: RsItemElement) {
-        visitor1.collectItem(item, itemPsi)
-        visitor2.collectItem(item, itemPsi)
+    override fun collectItem(item: ItemLight, stub: RsNamedStub) {
+        visitor1.collectItem(item, stub)
+        visitor2.collectItem(item, stub)
     }
 
     override fun collectImport(import: ImportLight) {
@@ -167,24 +183,26 @@ class CompositeModVisitor(
         visitor2.collectImport(import)
     }
 
-    override fun collectMacroCall(call: MacroCallLight, callPsi: RsMacroCall) {
-        visitor1.collectMacroCall(call, callPsi)
-        visitor2.collectMacroCall(call, callPsi)
+    override fun collectMacroCall(call: MacroCallLight, stub: RsMacroCallStub) {
+        visitor1.collectMacroCall(call, stub)
+        visitor2.collectMacroCall(call, stub)
     }
 
-    override fun collectMacroDef(def: MacroDefLight, defPsi: RsMacro) {
-        visitor1.collectMacroDef(def, defPsi)
-        visitor2.collectMacroDef(def, defPsi)
+    override fun collectMacroDef(def: MacroDefLight) {
+        visitor1.collectMacroDef(def)
+        visitor2.collectMacroDef(def)
     }
 
-    override fun afterCollectMod(mod: RsMod) {
-        visitor1.afterCollectMod(mod)
-        visitor2.afterCollectMod(mod)
+    override fun afterCollectMod() {
+        visitor1.afterCollectMod()
+        visitor2.afterCollectMod()
     }
 }
 
 sealed class VisibilityLight : Writeable {
     object Public : VisibilityLight()
+
+    // todo хранить как `Array<String>` ?
     class Restricted(val inPath: String) : VisibilityLight()
 
     override fun writeTo(data: DataOutput) {
@@ -201,14 +219,13 @@ sealed class VisibilityLight : Writeable {
         val CRATE = Restricted("crate")
         val PRIVATE = Restricted("self")
 
-        fun from(visibility: RsVisibilityOwner): VisibilityLight {
-            val vis = visibility.vis ?: return PRIVATE
-            // todo optimization: use `vis.stub.findChildStubByType(RsVisStub.Type)`
-            return when (vis.stubKind) {
+        fun from(visibility: StubElement<out RsVisibilityOwner>): VisibilityLight {
+            val vis = visibility.findChildStubByType(RsVisStub.Type) ?: return PRIVATE
+            return when (vis.kind) {
                 RsVisStubKind.PUB -> Public
                 RsVisStubKind.CRATE -> CRATE
                 RsVisStubKind.RESTRICTED -> {
-                    val path = vis.visRestriction!!.path
+                    val path = vis.visRestrictionPath!!
                     val pathText = path.fullPath.removePrefix("::")  // 2015 edition, absolute paths
                     if (pathText.isEmpty() || pathText == "crate") return CRATE
                     Restricted(pathText)
@@ -261,35 +278,36 @@ data class ImportLight(
     }
 }
 
-data class MacroCallLight(val path: String, val body: String) : Writeable {
+data class MacroCallLight(
+    val path: String,
+    val body: String,
+    val bodyHash: HashCode?,
+) : Writeable {
 
     override fun writeTo(data: DataOutput) {
         IOUtil.writeUTF(data, path)
-        IOUtil.writeUTF(data, body)
+        data.writeHashCodeAsNullable(bodyHash)
     }
 }
 
 data class MacroDefLight(
     val name: String,
-    val macroBodyText: String,
-    // todo: если [RsMacroBody] получается из строки, то он парсится каждый раз заново
-    //  но необязательно данный макрос будет использован
-    //  поэтому мб парсить лениво (хранить или строку или RsMacroBody)?
-    val macroBody: RsMacroBody,
+    val body: String,
+    val bodyHash: HashCode?,
     val hasMacroExport: Boolean,
     val hasLocalInnerMacros: Boolean,
 ) : Writeable {
 
     override fun writeTo(data: DataOutput) {
         IOUtil.writeUTF(data, name)
-        IOUtil.writeUTF(data, macroBodyText)
+        data.writeHashCodeAsNullable(bodyHash)
         // todo one byte
         data.writeBoolean(hasMacroExport)
         data.writeBoolean(hasLocalInnerMacros)
     }
 }
 
-private fun RsUseSpeck.getFullPathAndNameInScope(): Pair<String, String>? {
+private fun RsUseSpeckStub.getFullPathAndNameInScope(): Pair<String, String>? {
     return if (isStarImport) {
         val usePath = getFullPath() ?: return null
         val nameInScope = "_"  // todo
@@ -297,36 +315,79 @@ private fun RsUseSpeck.getFullPathAndNameInScope(): Pair<String, String>? {
     } else {
         testAssert { useGroup === null }
         val path = path ?: return null
+        // val nameInScope = alias?.name ?: return null
         val nameInScope = nameInScope ?: return null
         path.fullPath to nameInScope
     }
 }
 
-private fun RsUseSpeck.getFullPath(): String? {
+private fun RsUseSpeckStub.getFullPath(): String? {
     path?.let { return it.fullPath }
-    return when (val parent = parent) {
+    return when (val parentStub = parentStub) {
         // `use ::*;`  (2015 edition)
         //        ^ speck
-        is RsUseItem -> "crate"
+        is RsUseItemStub -> "crate"
         // `use aaa::{self, *};`
         //                  ^ speck
         // `use aaa::{{{*}}};`
         //              ^ speck
-        is RsUseGroup -> (parent.parent as? RsUseSpeck)?.getFullPath()
+        is RsPlaceholderStub /* RsUseGroup */ -> (parentStub.parentStub as? RsUseSpeckStub)?.getFullPath()
         else -> null
     }
 }
 
-private fun getMacroCallPath(call: RsMacroCall): String {
-    val path = call.path.fullPath
-
-    val crateIdFromLocalInnerMacros = call.path.getUserData(RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY)
-    if (crateIdFromLocalInnerMacros != null) {
-        return "$MACRO_DOLLAR_CRATE_IDENTIFIER::$crateIdFromLocalInnerMacros::$path"
+// `use aaa::{bbb, ccc::{ddd1, ddd2}};`
+//                       ~~~~ this
+// returns "aaa::ccc::ddd1"
+private val RsPathStub.fullPath: String
+    get() {
+        val segments = generateSequence(this) { it.qualifier }.toList()
+        val prefix = if (segments.last().hasColonColon) "::" else ""
+        return segments
+            .asReversed()
+            .joinToString("::", prefix = prefix) { it.referenceName }
+            .removeSuffix("::self")  // todo это ок?
     }
 
-    val crateIdFromDollarCrate = call.path.getUserData(RESOLVE_DOLLAR_CRATE_ID_KEY)
-    return adjustPathWithDollarCrate(path, crateIdFromDollarCrate)
+val RsUseSpeckStub.nameInScope: String?
+    get() {
+        if (useGroup != null) return null
+        alias?.name?.let { return it }
+        val baseName = path?.referenceName ?: return null
+        if (baseName == "self") {
+            return qualifier?.referenceName
+        }
+        return baseName
+    }
+
+private val RsPathStub.qualifier: RsPathStub?
+    get() {
+        path?.let { return it }
+        var ctx = parentStub
+        while (ctx is RsPathStub) {
+            ctx = ctx.parentStub
+        }
+        return (ctx as? RsUseSpeckStub)?.qualifier
+    }
+
+val RsUseSpeckStub.qualifier: RsPathStub?
+    get() {
+        val parentUseSpeck = (parentStub as? RsPlaceholderStub)?.parentStub as? RsUseSpeckStub ?: return null
+        return parentUseSpeck.pathOrQualifier
+    }
+
+val RsUseSpeckStub.pathOrQualifier: RsPathStub? get() = path ?: qualifier
+
+private fun getMacroCallPath(path: RsPathStub): String {
+    val pathText = path.fullPath
+
+    val crateIdFromLocalInnerMacros = path.getUserData(RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY)
+    if (crateIdFromLocalInnerMacros != null) {
+        return "$MACRO_DOLLAR_CRATE_IDENTIFIER::$crateIdFromLocalInnerMacros::$pathText"
+    }
+
+    val crateIdFromDollarCrate = path.getUserData(RESOLVE_DOLLAR_CRATE_ID_KEY)
+    return adjustPathWithDollarCrate(pathText, crateIdFromDollarCrate)
 }
 
 // before: `IntellijRustDollarCrate::foo;`
