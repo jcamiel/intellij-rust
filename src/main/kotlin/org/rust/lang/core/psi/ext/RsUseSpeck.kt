@@ -46,36 +46,6 @@ fun RsUseSpeck.forEachLeafSpeck(consumer: (RsUseSpeck) -> Unit) {
     if (group == null) consumer(this) else group.useSpeckList.forEach { it.forEachLeafSpeck(consumer) }
 }
 
-// // todo functional interface
-// fun RsUseItemStub.forEachLeafSpeck(consumer: (/* usePath */ Array<String>, /* nameInScope */ String, /* isStarImport */ Boolean) -> Unit) {
-//     val rootUseSpeck = findChildStubByType(RsUseSpeckStub.Type) ?: return
-//     val segments = mutableListOf<String>()
-//     fun go(speck: RsUseSpeckStub) {
-//         val isStarImport = speck.isStarImport
-//         val path = speck.path
-//         val alias = if (isStarImport) null else speck.alias?.name
-//         val useGroup = if (isStarImport) null else speck.useGroup
-//
-//     }
-//
-//     fun addSegments(path: RsPathStub): Int {
-//         val numberSegments = if (path.hasColonColon) {
-//             val subpath = path.path ?: error("Inconsistent `.hasColonColon` and `.path`")
-//             addSegments(subpath)
-//         } else {
-//             0
-//         }
-//         segments += path.referenceName
-//         return numberSegments
-//     }
-//     go(rootUseSpeck)
-// }
-
-fun RsUseSpeckStub.forEachLeafSpeck(consumer: (RsUseSpeckStub) -> Unit) {
-    val group = useGroup
-    if (group == null) consumer(this) else group.childrenStubs.forEach { (it as RsUseSpeckStub).forEachLeafSpeck(consumer) }
-}
-
 abstract class RsUseSpeckImplMixin : RsStubbedElementImpl<RsUseSpeckStub>, RsUseSpeck {
     constructor (node: ASTNode) : super(node)
     constructor (stub: RsUseSpeckStub, nodeType: IStubElementType<*, *>) : super(stub, nodeType)

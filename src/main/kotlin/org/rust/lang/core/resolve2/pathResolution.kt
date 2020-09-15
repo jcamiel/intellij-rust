@@ -14,12 +14,12 @@ enum class ResolveMode { IMPORT, OTHER }
 /** Returns `reachedFixedPoint=true` if we are sure that additions to [ModData.visibleItems] wouldn't change the result */
 fun CrateDefMap.resolvePathFp(
     containingMod: ModData,
-    path: String,
+    path: Array<String>,
     mode: ResolveMode,
     withInvisibleItems: Boolean
 ): ResolvePathResult {
-    val (pathKind, segments) = getPathKind(path)
-        .run { first to second.toMutableList() }
+    // todo var only for `firstSegmentIndex` ?
+    var (pathKind, firstSegmentIndex) = getPathKind(path)
     // we use PerNs and not ModData for first segment,
     // because path could be one-segment: `use crate as foo;` and `use func as func2;`
     //                                         ~~~~~ path              ~~~~ path
@@ -39,17 +39,17 @@ fun CrateDefMap.resolvePathFp(
         // (with the simplification in https://github.com/rust-lang/rust/issues/57745)
         metaData.edition === CargoWorkspace.Edition.EDITION_2015
             && (pathKind is PathKind.Absolute || pathKind is PathKind.Plain && mode === ResolveMode.IMPORT) -> {
-            val firstSegment = segments.removeAt(0)
+            val firstSegment = path[firstSegmentIndex++]
             resolveNameInCrateRootOrExternPrelude(firstSegment)
         }
         pathKind === PathKind.Absolute -> {
-            val crateName = segments.removeAt(0)
+            val crateName = path[firstSegmentIndex++]
             externPrelude[crateName]?.asPerNs()
             // extern crate declarations can add to the extern prelude
                 ?: return ResolvePathResult.empty(reachedFixedPoint = false)
         }
         pathKind === PathKind.Plain -> {
-            val firstSegment = segments.removeAt(0)
+            val firstSegment = path[firstSegmentIndex++]
             resolveNameInModule(containingMod, firstSegment)
                 ?: return ResolvePathResult.empty(reachedFixedPoint = false)
         }
@@ -58,7 +58,7 @@ fun CrateDefMap.resolvePathFp(
 
     var currentPerNs = firstSegmentPerNs
     var visitedOtherCrate = false
-    for (segment in segments) {
+    for (segmentIndex in firstSegmentIndex until path.size) {
         // we still have path segments left, but the path so far
         // didn't resolve in the types namespace => no resolution
         val currentModAsVisItem = currentPerNs.types
@@ -72,6 +72,7 @@ fun CrateDefMap.resolvePathFp(
             ?: return ResolvePathResult.empty(reachedFixedPoint = true)
         if (currentModData.crate != crate) visitedOtherCrate = true
 
+        val segment = path[segmentIndex]
         currentPerNs = currentModData[segment]
     }
     val resultPerNs = if (withInvisibleItems) currentPerNs else currentPerNs.filterVisibility { !it.isInvisible }
@@ -135,12 +136,10 @@ private sealed class PathKind {
     class DollarCrate(val crateId: CratePersistentId) : PathKind()
 }
 
-private fun getPathKind(path: String): Pair<PathKind, List<String> /* remaining segments */> {
-    check(path.isNotEmpty())
-    val segments = path.split("::")
-    val (kind, segmentsToSkip) = when (segments.first()) {
+private fun getPathKind(path: Array<String>): Pair<PathKind, Int /* segments to skip */> {
+    return when (path.first()) {
         MACRO_DOLLAR_CRATE_IDENTIFIER -> {
-            val crateId = segments.getOrNull(1)?.toIntOrNull()
+            val crateId = path.getOrNull(1)?.toIntOrNull()
             if (crateId != null) {
                 PathKind.DollarCrate(crateId) to 2
             } else {
@@ -150,17 +149,20 @@ private fun getPathKind(path: String): Pair<PathKind, List<String> /* remaining 
         }
         "crate" -> PathKind.Crate to 1
         "super" -> {
-            val level = segments.takeWhile { it == "super" }.size
+            var level = 0
+            while (path.getOrNull(level) == "super") ++level
             PathKind.Super(level) to level
         }
         "self" -> {
-            if (segments.getOrNull(1) == "super") return getPathKind(path.removePrefix("self::"))
-            PathKind.Super(0) to 1
+            if (path.getOrNull(1) == "super") {
+                getPathKind(path.copyOfRange(1, path.size)).run { first to second + 1 }
+            } else {
+                PathKind.Super(0) to 1
+            }
         }
         "" -> PathKind.Absolute to 1
         else -> PathKind.Plain to 0
     }
-    return kind to segments.subList(segmentsToSkip, segments.size)
 }
 
 data class ResolvePathResult(

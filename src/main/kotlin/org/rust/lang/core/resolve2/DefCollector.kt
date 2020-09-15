@@ -104,7 +104,7 @@ class DefCollector(
 
     private fun resolveImport(import: Import): PartialResolvedImport {
         if (import.isExternCrate) {
-            val res = defMap.resolveExternCrateAsPerNs(import.usePath, import.visibility) ?: return Unresolved
+            val res = defMap.resolveExternCrateAsPerNs(import.usePath.single(), import.visibility) ?: return Unresolved
             return Resolved(res)
         }
 
@@ -325,7 +325,7 @@ class DefCollector(
         val def = legacyMacroDef ?: run {
             val perNs = defMap.resolvePathFp(
                 call.containingMod,
-                call.path,
+                call.path.split("::").toTypedArray(),  // todo
                 ResolveMode.OTHER,
                 withInvisibleItems = false  // because we expand only cfg-enabled macros
             )
@@ -518,9 +518,9 @@ private class PerNsGlobImports {
     val macros: MutableSet<Pair<ModData, String>> = hashSetOf()
 }
 
-data class Import(
+class Import(
     val containingMod: ModData,
-    val usePath: String,  // foo::bar::baz
+    val usePath: Array<String>,
     val nameInScope: String,
     val visibility: Visibility,
     val isGlob: Boolean = false,

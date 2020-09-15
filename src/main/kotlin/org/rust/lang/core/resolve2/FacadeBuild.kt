@@ -181,7 +181,7 @@ private class DefMapUpdater(
                 val defMap = defMapService.getDefMapHolder(crateId).defMap ?: return@mapNotNull null
                 it to defMap
             }
-            .toMap()
+            .toMap(hashMapOf())
     }
 
     private fun getPool(size: Int) = if (async && size > 1) pool else SingleThreadExecutor()

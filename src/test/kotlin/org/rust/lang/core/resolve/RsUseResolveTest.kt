@@ -259,6 +259,16 @@ class RsUseResolveTest : RsResolveTestBase() {
         }              //^
     """)
 
+    // https://github.com/sfackler/rust-openssl/blob/0a0da84f939090f72980c77f40199fc76245d289/openssl-sys/src/asn1.rs#L3
+    fun `test wildcard without any path`() = checkByCode("""
+        mod inner {
+            use *;
+            fn foo() {}
+             //X
+            fn main() { foo(); }
+        }              //^
+    """)
+
     fun `test super wildcard with private`() = checkByCode("""
         fn foo() {}
           //X

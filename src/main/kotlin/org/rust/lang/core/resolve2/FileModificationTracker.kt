@@ -75,7 +75,7 @@ private class ModDataLight {
 
     fun sort() {
         items.sortBy { it.name }  // todo
-        imports.sortBy { it.usePath }  // todo
+        imports.sortBy { it.usePathString }  // todo
         // todo smart sort for macro calls & defs
     }
 }

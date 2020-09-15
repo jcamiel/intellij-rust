@@ -259,7 +259,11 @@ class ModData(
 
     fun getNthParent(n: Int): ModData? {
         check(n >= 0)
-        return parents.drop(n).firstOrNull()
+        var current = this
+        repeat(n) {
+            current = current.parent ?: return null
+        }
+        return current
     }
 
     override fun toString(): String = "ModData($path, crate=$crate)"

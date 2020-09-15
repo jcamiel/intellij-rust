@@ -18,8 +18,8 @@ import org.rust.lang.core.psi.RsIncludeMacroArgument
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.namespaces
+import org.rust.lang.core.resolve2.util.forEachLeafSpeck
 import org.rust.lang.core.stubs.*
-import org.rust.openapiext.testAssert
 import org.rust.stdext.HashCode
 import org.rust.stdext.writeHashCodeAsNullable
 import java.io.DataOutput
@@ -82,14 +82,22 @@ class ModCollectorBase private constructor(
         val hasPreludeImport = useItem.hasPreludeImport
         // todo move dollarCrateId from RsUseItem to RsPath
         val dollarCrateId = useItem.getUserData(RESOLVE_DOLLAR_CRATE_ID_KEY)  // for `use $crate::`
-        useItem.useSpeck?.forEachLeafSpeck { speck ->
-            val (usePath, nameInScope) = speck.getFullPathAndNameInScope() ?: return@forEachLeafSpeck
+        useItem.forEachLeafSpeck { usePath, alias, isStarImport ->
+            // Ignore `use self;`
+            if (alias == null && usePath.singleOrNull() == "self") return@forEachLeafSpeck
+
+            val usePathAdjusted = if (usePath.first() == MACRO_DOLLAR_CRATE_IDENTIFIER) {
+                // todo
+                adjustPathWithDollarCrate(usePath.joinToString("::"), dollarCrateId).split("::").toTypedArray()
+            } else {
+                usePath
+            }
             val import = ImportLight(
-                usePath = adjustPathWithDollarCrate(usePath, dollarCrateId),
-                nameInScope = nameInScope,
+                usePath = usePathAdjusted,
+                nameInScope = alias ?: usePath.last(),
                 visibility = visibility,
                 isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && useItem.isEnabledByCfgSelf(crate),
-                isGlob = speck.isStarImport,
+                isGlob = isStarImport,
                 isPrelude = hasPreludeImport
             )
             visitor.collectImport(import)
@@ -98,14 +106,14 @@ class ModCollectorBase private constructor(
 
     private fun collectExternCrate(externCrate: RsExternCrateItemStub) {
         val import = ImportLight(
-            usePath = externCrate.name,
+            usePath = arrayOf(externCrate.name),
             nameInScope = externCrate.nameWithAlias,
             visibility = VisibilityLight.from(externCrate),
             isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && externCrate.isEnabledByCfgSelf(crate),
             isExternCrate = true,
             isMacroUse = externCrate.hasMacroUse
         )
-        if (import.usePath == "self" && import.nameInScope == "self") return
+        if (externCrate.name == "self" && import.nameInScope == "self") return
         visitor.collectImport(import)
     }
 
@@ -254,8 +262,8 @@ data class ItemLight(
     }
 }
 
-data class ImportLight(
-    val usePath: String,  // foo::bar::baz
+class ImportLight(
+    val usePath: Array<String>,
     val nameInScope: String,
     val visibility: VisibilityLight,
     val isDeeplyEnabledByCfg: Boolean,
@@ -265,8 +273,11 @@ data class ImportLight(
     val isPrelude: Boolean = false,  // #[prelude_import]
 ) : Writeable {
 
+    // todo ?
+    val usePathString: String = usePath.singleOrNull() ?: usePath.joinToString("::")
+
     override fun writeTo(data: DataOutput) {
-        IOUtil.writeUTF(data, usePath)
+        IOUtil.writeUTF(data, usePathString)
         IOUtil.writeUTF(data, nameInScope)
         visibility.writeTo(data)
         // todo use one byte
@@ -307,35 +318,6 @@ data class MacroDefLight(
     }
 }
 
-private fun RsUseSpeckStub.getFullPathAndNameInScope(): Pair<String, String>? {
-    return if (isStarImport) {
-        val usePath = getFullPath() ?: return null
-        val nameInScope = "_"  // todo
-        usePath to nameInScope
-    } else {
-        testAssert { useGroup === null }
-        val path = path ?: return null
-        // val nameInScope = alias?.name ?: return null
-        val nameInScope = nameInScope ?: return null
-        path.fullPath to nameInScope
-    }
-}
-
-private fun RsUseSpeckStub.getFullPath(): String? {
-    path?.let { return it.fullPath }
-    return when (val parentStub = parentStub) {
-        // `use ::*;`  (2015 edition)
-        //        ^ speck
-        is RsUseItemStub -> "crate"
-        // `use aaa::{self, *};`
-        //                  ^ speck
-        // `use aaa::{{{*}}};`
-        //              ^ speck
-        is RsPlaceholderStub /* RsUseGroup */ -> (parentStub.parentStub as? RsUseSpeckStub)?.getFullPath()
-        else -> null
-    }
-}
-
 // `use aaa::{bbb, ccc::{ddd1, ddd2}};`
 //                       ~~~~ this
 // returns "aaa::ccc::ddd1"
@@ -347,17 +329,6 @@ private val RsPathStub.fullPath: String
             .asReversed()
             .joinToString("::", prefix = prefix) { it.referenceName }
             .removeSuffix("::self")  // todo это ок?
-    }
-
-val RsUseSpeckStub.nameInScope: String?
-    get() {
-        if (useGroup != null) return null
-        alias?.name?.let { return it }
-        val baseName = path?.referenceName ?: return null
-        if (baseName == "self") {
-            return qualifier?.referenceName
-        }
-        return baseName
     }
 
 private val RsPathStub.qualifier: RsPathStub?

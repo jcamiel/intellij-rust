@@ -65,7 +65,7 @@ fun buildDefMapContainingExplicitItems(
             val defMap = dependenciesDefMaps[it.crate] ?: return@mapNotNull null
             it.normName to defMap
         }
-        .toMap()
+        .toMap(hashMapOf())
     // todo вынести в отдельный метод
     val allDependenciesDefMaps = crate.flatDependencies
         .mapNotNull {
@@ -73,7 +73,7 @@ fun buildDefMapContainingExplicitItems(
             val defMap = dependenciesDefMaps[it] ?: return@mapNotNull null
             id to defMap
         }
-        .toMap()
+        .toMap(hashMapOf())
     // look for the prelude
     // If the dependency defines a prelude, we overwrite an already defined
     // prelude. This is necessary to import the "std" prelude if a crate
@@ -107,7 +107,7 @@ fun buildDefMapContainingExplicitItems(
     val collector = ModCollector(crateRootData, defMap, crateRootData, context)
     createExternCrateStdImport(crateRoot, crateRootData)?.let {
         context.imports += it
-        collector.importExternCrateMacros(it.usePath)
+        collector.importExternCrateMacros(it.usePath.single())
     }
     collector.collectFileAndCalculateHash(crateRoot)
 
@@ -213,7 +213,7 @@ class ModCollector(
         )
 
         if (import.isDeeplyEnabledByCfg && import.isExternCrate && import.isMacroUse) {
-            importExternCrateMacros(import.usePath)
+            importExternCrateMacros(import.usePath.single())
         }
     }
 
@@ -396,7 +396,7 @@ private fun createExternCrateStdImport(crateRoot: RsFile, crateRootData: ModData
     }
     return Import(
         crateRootData,
-        name,
+        arrayOf(name),
         nameInScope = if (crateRoot.edition === EDITION_2015) name else "_",
         visibility = Visibility.Restricted(crateRootData),
         isExternCrate = true,

@@ -102,7 +102,7 @@ class AsyncDefMapBuilder(
                 val dependencyDefMap = builtDefMaps[it] ?: return@mapNotNull null
                 it to dependencyDefMap
             }
-            .toMap()
+            .toMap(hashMapOf())
         val defMap = buildDefMap(crate, dependenciesDefMaps, indicator)
         val holder = defMapService.getDefMapHolder(crateId)
         holder.defMap = defMap

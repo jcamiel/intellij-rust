@@ -52,7 +52,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
     override fun getType() = Type
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
-        private const val STUB_VERSION = 204
+        private const val STUB_VERSION = 205
 
         // Bump this number if Stub structure changes
         override fun getStubVersion(): Int = RustParserDefinition.PARSER_VERSION + STUB_VERSION
@@ -382,30 +382,37 @@ class RsUseItemStub(
 
 class RsUseSpeckStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    val isStarImport: Boolean
+    // todo one byte ?
+    val isStarImport: Boolean,
+    val hasColonColon: Boolean,
 ) : RsElementStub<RsUseSpeck>(parent, elementType) {
 
-    val path: RsPathStub? get() = findChildStubByType(RsPathStub.Type)
-    val alias: RsAliasStub? get() = findChildStubByType(RsAliasStub.Type)
-    val useGroup: RsPlaceholderStub? get() = findChildStubByType(USE_GROUP as IStubElementType<RsPlaceholderStub, *>)
+    val path: RsPathStub?
+        get() = findChildStubByType(RsPathStub.Type)
+    val alias: RsAliasStub?
+        get() = findChildStubByType(RsAliasStub.Type)
+    val useGroup: RsPlaceholderStub?
+        get() = findChildStubByType(USE_GROUP as IStubElementType<RsPlaceholderStub, *>)
 
     object Type : RsStubElementType<RsUseSpeckStub, RsUseSpeck>("USE_SPECK") {
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsUseSpeckStub(parentStub, this,
+                dataStream.readBoolean(),
                 dataStream.readBoolean()
             )
 
         override fun serialize(stub: RsUseSpeckStub, dataStream: StubOutputStream) =
             with(dataStream) {
                 writeBoolean(stub.isStarImport)
+                writeBoolean(stub.hasColonColon)
             }
 
         override fun createPsi(stub: RsUseSpeckStub) =
             RsUseSpeckImpl(stub, this)
 
         override fun createStub(psi: RsUseSpeck, parentStub: StubElement<*>?) =
-            RsUseSpeckStub(parentStub, this, psi.isStarImport)
+            RsUseSpeckStub(parentStub, this, psi.isStarImport, psi.coloncolon != null)
 
         override fun indexStub(stub: RsUseSpeckStub, sink: IndexSink) = sink.indexUseSpeck(stub)
     }
