@@ -52,7 +52,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
     override fun getType() = Type
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
-        private const val STUB_VERSION = 205
+        private const val STUB_VERSION = 206
 
         // Bump this number if Stub structure changes
         override fun getStubVersion(): Int = RustParserDefinition.PARSER_VERSION + STUB_VERSION
@@ -313,8 +313,6 @@ abstract class RsAttributeOwnerStubBase<T: RsElement>(
         get() = BitUtil.isSet(flags, RsAttributeOwnerStub.CFG_MASK)
     override val hasMacroUse: Boolean
         get() = BitUtil.isSet(flags, RsAttributeOwnerStub.HAS_MACRO_USE_MASK)
-    override val hasPreludeImport: Boolean
-        get() = BitUtil.isSet(flags, RsAttributeOwnerStub.HAS_PRELUDE_IMPORT_MASK)
 
     protected abstract val flags: Int
 }
@@ -361,7 +359,10 @@ class RsUseItemStub(
     override val flags: Int
 ) : RsAttributeOwnerStubBase<RsUseItem>(parent, elementType) {
 
-    val useSpeck: RsUseSpeckStub? get() = findChildStubByType(RsUseSpeckStub.Type)
+    val useSpeck: RsUseSpeckStub?
+        get() = findChildStubByType(RsUseSpeckStub.Type)
+    val hasPreludeImport: Boolean
+        get() = BitUtil.isSet(flags, HAS_PRELUDE_IMPORT_MASK)
 
     object Type : RsStubElementType<RsUseItemStub, RsUseItem>("USE_ITEM") {
 
@@ -375,8 +376,15 @@ class RsUseItemStub(
         override fun createPsi(stub: RsUseItemStub) =
             RsUseItemImpl(stub, this)
 
-        override fun createStub(psi: RsUseItem, parentStub: StubElement<*>?) =
-            RsUseItemStub(parentStub, this, RsAttributeOwnerStub.extractFlags(psi))
+        override fun createStub(psi: RsUseItem, parentStub: StubElement<*>?): RsUseItemStub {
+            var flags = RsAttributeOwnerStub.extractFlags(psi)
+            flags = BitUtil.set(flags, HAS_PRELUDE_IMPORT_MASK, psi.hasPreludeImport)
+            return RsUseItemStub(parentStub, this, flags)
+        }
+    }
+
+    companion object {
+        private val HAS_PRELUDE_IMPORT_MASK: Int = makeBitMask(RsAttributeOwnerStub.USED_BITS + 0)
     }
 }
 
