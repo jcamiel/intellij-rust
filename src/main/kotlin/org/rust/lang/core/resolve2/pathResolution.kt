@@ -140,10 +140,10 @@ private fun getPathKind(path: Array<String>): Pair<PathKind, Int /* segments to 
     return when (path.first()) {
         MACRO_DOLLAR_CRATE_IDENTIFIER -> {
             val crateId = path.getOrNull(1)?.toIntOrNull()
-            if (crateId != null) {
+            if (crateId !== null) {
                 PathKind.DollarCrate(crateId) to 2
             } else {
-                RESOLVE_LOG.warn("Invalid path with starting with dollar crate: '$path'")
+                RESOLVE_LOG.warn("Invalid path starting with dollar crate: '${path.contentToString()}'")
                 PathKind.Plain to 0
             }
         }

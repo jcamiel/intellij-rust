@@ -73,7 +73,7 @@ fun DefMapService.getOrUpdateIfNeeded(crate: Crate): CrateDefMap? {
             val indicator = ProgressManager.getGlobalProgressIndicator() ?: EmptyProgressIndicator()
             // todo выполнять вне read action ?
             doUpdateDefMapForAllCrates(pool, indicator, async = true)
-            if (holder.defMap != null) holder.checkHasLatestStamp()
+            if (holder.defMap !== null) holder.checkHasLatestStamp()
             return@synchronized holder.defMap
         }
     }

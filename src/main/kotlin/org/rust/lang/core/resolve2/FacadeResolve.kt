@@ -27,7 +27,7 @@ fun shouldUseNewResolveIn(scope: RsMod): Boolean =
         && scope.containingCrate is CargoBasedCrate
         && scope.modName != TMP_MOD_NAME
         && !scope.isModInsideItem
-        && scope.containingCrate != null
+        && scope.containingCrate !== null
         && !scope.isShadowedByOtherMod()
 
 private val RsMod.isModInsideItem: Boolean
@@ -80,7 +80,7 @@ fun processItemDeclarations2(
         // Also we need to distinguish unit struct and e.g. mod and function with same name in one module
         val elements = visItems
             .flatMapTo(hashSetOf()) { (visItem, namespace) ->
-                if (visItem == null || namespace !in ns) return@flatMapTo emptyList()
+                if (visItem === null || namespace !in ns) return@flatMapTo emptyList()
                 visItem.tryConvertToPsi(namespace) ?: emptyList()
             }
         elements.any { processor(name, it) }
@@ -98,7 +98,7 @@ fun processItemDeclarations2(
 
     if (ipm.withExternCrates && Namespace.Types in ns) {
         defMap.externPrelude.processEntriesWithName(processor.name) { name, externCrateModData ->
-            if (modData.visibleItems[name]?.types != null) return@processEntriesWithName false
+            if (modData.visibleItems[name]?.types !== null) return@processEntriesWithName false
             val externCratePsi = externCrateModData
                 .asVisItem()
                 // todo нет способа попроще?)

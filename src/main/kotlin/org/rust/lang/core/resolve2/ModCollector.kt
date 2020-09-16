@@ -189,7 +189,7 @@ class ModCollector(
 
     private fun collectMod(mod: StubElement<out RsMod>, hashCalculator: HashCalculator?) {
         this.hashCalculator = hashCalculator
-        val visitor = if (hashCalculator != null) {
+        val visitor = if (hashCalculator !== null) {
             val hashVisitor = hashCalculator.getVisitor(crate, modData.fileRelativePath)
             CompositeModVisitor(hashVisitor, this)
         } else {
@@ -220,7 +220,7 @@ class ModCollector(
     // `#[macro_use] extern crate <name>;` - import macros
     fun importExternCrateMacros(externCrateName: String) {
         val externCrateDefMap = defMap.resolveExternCrateAsDefMap(externCrateName)
-        if (externCrateDefMap != null) {
+        if (externCrateDefMap !== null) {
             defMap.importAllMacrosExported(externCrateDefMap)
         }
     }
@@ -240,7 +240,7 @@ class ModCollector(
         onAddItem(modData, name, perNs)
 
         // we have to check `modData[name]` to be sure that `childModules` and `visibleItems` are consistent
-        if (childModData != null && perNs.types === modData[name].types) {
+        if (childModData !== null && perNs.types === modData[name].types) {
             modData.childModules[name] = childModData
         }
     }
@@ -346,8 +346,9 @@ class ModCollector(
     override fun collectMacroCall(call: MacroCallLight, stub: RsMacroCallStub) {
         check(modData.isDeeplyEnabledByCfg) { "for performance reasons cfg-disabled macros should not be collected" }
         val bodyHash = call.bodyHash
-        if (bodyHash === null && call.path != "include") return
-        val macroDef = if (call.path.contains("::")) null else modData.legacyMacros[call.path]
+        val pathOneSegment = call.path.singleOrNull()
+        if (bodyHash === null && pathOneSegment != "include") return
+        val macroDef = pathOneSegment?.let { modData.legacyMacros[it] }
         val dollarCrateMap = stub.getUserData(RESOLVE_RANGE_MAP_KEY) ?: RangeMap.EMPTY
         context.macroCalls += MacroCallInfo(modData, call.path, call.body, bodyHash, macroDepth, macroDef, dollarCrateMap)
     }
@@ -370,6 +371,10 @@ class ModCollector(
         if (!isDeeplyEnabledByCfg) return Visibility.CfgDisabled
         return when (visibility) {
             VisibilityLight.Public -> Visibility.Public
+            // todo optimization - create Visibility.Crate and Visibility.Private to reduce allocations ?
+            //  можно хранить их в ModData
+            VisibilityLight.Crate -> Visibility.Restricted(crateRoot)
+            VisibilityLight.Private -> Visibility.Restricted(modData)
             is VisibilityLight.Restricted -> resolveRestrictedVisibility(visibility.inPath, crateRoot, modData)
         }
     }
@@ -406,16 +411,15 @@ private fun createExternCrateStdImport(crateRoot: RsFile, crateRootData: ModData
 
 // https://doc.rust-lang.org/reference/visibility-and-privacy.html#pubin-path-pubcrate-pubsuper-and-pubself
 private fun resolveRestrictedVisibility(
-    pathText: String,
+    path: Array<String>,
     crateRoot: ModData,
     containingMod: ModData
 ): Visibility.Restricted {
-    val segments = pathText.split("::")
-    val initialModData = when (segments.first()) {
+    val initialModData = when (path.first()) {
         "super", "self" -> containingMod
         else -> crateRoot
     }
-    val pathTarget = segments
+    val pathTarget = path
         .fold(initialModData) { modData, segment ->
             val nextModData = when (segment) {
                 "self" -> modData
@@ -526,7 +530,7 @@ private sealed class ChildMod(val name: String, val project: Project) {
 private fun ChildMod.getOwnedDirectory(parentMod: ModData, pathAttribute: String?): PsiDirectory? {
     if (this is ChildMod.File && name == RsConstants.MOD_RS_FILE) return file.parent
 
-    val (parentDirectory, path) = if (pathAttribute != null) {
+    val (parentDirectory, path) = if (pathAttribute !== null) {
         when {
             this is ChildMod.File -> return file.parent
             parentMod.isRsFile -> parentMod.asPsiFile(project)?.parent to pathAttribute

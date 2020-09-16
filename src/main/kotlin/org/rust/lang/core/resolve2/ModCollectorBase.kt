@@ -10,8 +10,6 @@ import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.stubs.StubElement
 import com.intellij.util.io.IOUtil
 import org.rust.lang.core.crate.Crate
-import org.rust.lang.core.crate.CratePersistentId
-import org.rust.lang.core.macros.MACRO_DOLLAR_CRATE_IDENTIFIER
 import org.rust.lang.core.psi.RsElementTypes.INCLUDE_MACRO_ARGUMENT
 import org.rust.lang.core.psi.RsForeignModItem
 import org.rust.lang.core.psi.RsIncludeMacroArgument
@@ -19,8 +17,11 @@ import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.namespaces
 import org.rust.lang.core.resolve2.util.forEachLeafSpeck
+import org.rust.lang.core.resolve2.util.getPathWithAdjustedDollarCrate
+import org.rust.lang.core.resolve2.util.getRestrictedPath
 import org.rust.lang.core.stubs.*
 import org.rust.stdext.HashCode
+import org.rust.stdext.exhaustive
 import org.rust.stdext.writeHashCodeAsNullable
 import java.io.DataOutput
 
@@ -80,20 +81,12 @@ class ModCollectorBase private constructor(
     private fun collectUseItem(useItem: RsUseItemStub) {
         val visibility = VisibilityLight.from(useItem)
         val hasPreludeImport = useItem.hasPreludeImport
-        // todo move dollarCrateId from RsUseItem to RsPath
-        val dollarCrateId = useItem.getUserData(RESOLVE_DOLLAR_CRATE_ID_KEY)  // for `use $crate::`
         useItem.forEachLeafSpeck { usePath, alias, isStarImport ->
             // Ignore `use self;`
-            if (alias == null && usePath.singleOrNull() == "self") return@forEachLeafSpeck
+            if (alias === null && usePath.singleOrNull() == "self") return@forEachLeafSpeck
 
-            val usePathAdjusted = if (usePath.first() == MACRO_DOLLAR_CRATE_IDENTIFIER) {
-                // todo
-                adjustPathWithDollarCrate(usePath.joinToString("::"), dollarCrateId).split("::").toTypedArray()
-            } else {
-                usePath
-            }
             val import = ImportLight(
-                usePath = usePathAdjusted,
+                usePath = usePath,
                 nameInScope = alias ?: usePath.last(),
                 visibility = visibility,
                 isDeeplyEnabledByCfg = isDeeplyEnabledByCfg && useItem.isEnabledByCfgSelf(crate),
@@ -142,7 +135,7 @@ class ModCollectorBase private constructor(
         val isCallDeeplyEnabledByCfg = isDeeplyEnabledByCfg && call.isEnabledByCfgSelf(crate)
         if (!isCallDeeplyEnabledByCfg) return
         val body = call.getIncludeMacroArgument() ?: call.macroBody ?: return
-        val path = getMacroCallPath(call.path)
+        val path = call.getPathWithAdjustedDollarCrate()
         val callLight = MacroCallLight(path, body, call.bodyHash)
         visitor.collectMacroCall(callLight, call)
     }
@@ -210,33 +203,35 @@ class CompositeModVisitor(
 sealed class VisibilityLight : Writeable {
     object Public : VisibilityLight()
 
-    // todo хранить как `Array<String>` ?
-    class Restricted(val inPath: String) : VisibilityLight()
+    // `pub(crate)`
+    object Crate : VisibilityLight()
+
+    class Restricted(val inPath: Array<String>) : VisibilityLight()
+
+    object Private : VisibilityLight()
 
     override fun writeTo(data: DataOutput) {
         when (this) {
-            Public -> data.writeBoolean(true)
+            Public -> data.writeByte(0)
+            Crate -> data.writeByte(1)
+            Private -> data.writeByte(2)
             is Restricted -> {
-                data.writeBoolean(false)
-                IOUtil.writeUTF(data, inPath)
+                data.writeByte(3)
+                data.writePath(inPath)
             }
-        }
+        }.exhaustive
     }
 
     companion object {
-        val CRATE = Restricted("crate")
-        val PRIVATE = Restricted("self")
-
-        fun from(visibility: StubElement<out RsVisibilityOwner>): VisibilityLight {
-            val vis = visibility.findChildStubByType(RsVisStub.Type) ?: return PRIVATE
+        fun from(item: StubElement<out RsVisibilityOwner>): VisibilityLight {
+            val vis = item.findChildStubByType(RsVisStub.Type) ?: return Private
             return when (vis.kind) {
                 RsVisStubKind.PUB -> Public
-                RsVisStubKind.CRATE -> CRATE
+                RsVisStubKind.CRATE -> Crate
                 RsVisStubKind.RESTRICTED -> {
-                    val path = vis.visRestrictionPath!!
-                    val pathText = path.fullPath.removePrefix("::")  // 2015 edition, absolute paths
-                    if (pathText.isEmpty() || pathText == "crate") return CRATE
-                    Restricted(pathText)
+                    val path = vis.getRestrictedPath()
+                    if (path.isEmpty() || path.singleOrNull() == "crate") return Crate
+                    Restricted(path)
                 }
             }
         }
@@ -289,14 +284,14 @@ class ImportLight(
     }
 }
 
-data class MacroCallLight(
-    val path: String,
+class MacroCallLight(
+    val path: Array<String>,
     val body: String,
     val bodyHash: HashCode?,
 ) : Writeable {
 
     override fun writeTo(data: DataOutput) {
-        IOUtil.writeUTF(data, path)
+        data.writePath(path)
         data.writeHashCodeAsNullable(bodyHash)
     }
 }
@@ -318,58 +313,10 @@ data class MacroDefLight(
     }
 }
 
-// `use aaa::{bbb, ccc::{ddd1, ddd2}};`
-//                       ~~~~ this
-// returns "aaa::ccc::ddd1"
-private val RsPathStub.fullPath: String
-    get() {
-        val segments = generateSequence(this) { it.qualifier }.toList()
-        val prefix = if (segments.last().hasColonColon) "::" else ""
-        return segments
-            .asReversed()
-            .joinToString("::", prefix = prefix) { it.referenceName }
-            .removeSuffix("::self")  // todo это ок?
+// todo ?
+private fun DataOutput.writePath(path: Array<String>) {
+    for (segment in path) {
+        IOUtil.writeUTF(this, segment)
+        writeChar(','.toInt())
     }
-
-private val RsPathStub.qualifier: RsPathStub?
-    get() {
-        path?.let { return it }
-        var ctx = parentStub
-        while (ctx is RsPathStub) {
-            ctx = ctx.parentStub
-        }
-        return (ctx as? RsUseSpeckStub)?.qualifier
-    }
-
-val RsUseSpeckStub.qualifier: RsPathStub?
-    get() {
-        val parentUseSpeck = (parentStub as? RsPlaceholderStub)?.parentStub as? RsUseSpeckStub ?: return null
-        return parentUseSpeck.pathOrQualifier
-    }
-
-val RsUseSpeckStub.pathOrQualifier: RsPathStub? get() = path ?: qualifier
-
-private fun getMacroCallPath(path: RsPathStub): String {
-    val pathText = path.fullPath
-
-    val crateIdFromLocalInnerMacros = path.getUserData(RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY)
-    if (crateIdFromLocalInnerMacros != null) {
-        return "$MACRO_DOLLAR_CRATE_IDENTIFIER::$crateIdFromLocalInnerMacros::$pathText"
-    }
-
-    val crateIdFromDollarCrate = path.getUserData(RESOLVE_DOLLAR_CRATE_ID_KEY)
-    return adjustPathWithDollarCrate(pathText, crateIdFromDollarCrate)
-}
-
-// before: `IntellijRustDollarCrate::foo;`
-// after:  `IntellijRustDollarCrate::12345::foo;`
-//                                   ~~~~~ crateId
-private fun adjustPathWithDollarCrate(path: String, crateId: CratePersistentId?): String {
-    if (!path.startsWith(MACRO_DOLLAR_CRATE_IDENTIFIER)) return path
-
-    if (crateId === null) {
-        RESOLVE_LOG.error("Can't find crate for path starting with \$crate: '$path'")
-        return path
-    }
-    return path.replaceFirst(MACRO_DOLLAR_CRATE_IDENTIFIER, "$MACRO_DOLLAR_CRATE_IDENTIFIER::$crateId")
 }

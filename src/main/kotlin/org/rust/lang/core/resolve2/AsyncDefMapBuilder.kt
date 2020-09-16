@@ -108,7 +108,7 @@ class AsyncDefMapBuilder(
         holder.defMap = defMap
         holder.shouldRebuild = false
         holder.setLatestStamp()
-        if (defMap != null) {
+        if (defMap !== null) {
             builtDefMaps[crate] = defMap
         }
     }

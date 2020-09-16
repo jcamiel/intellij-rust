@@ -71,7 +71,7 @@ val RsMacroCallStub.bodyTextRange: TextRange?
     get() {
         val bodyStartOffset = bodyStartOffset
         val macroBody = macroBody
-        return if (bodyStartOffset != -1 && macroBody != null) {
+        return if (bodyStartOffset != -1 && macroBody !== null) {
             TextRange(bodyStartOffset, bodyStartOffset + macroBody.length)
         } else {
             null

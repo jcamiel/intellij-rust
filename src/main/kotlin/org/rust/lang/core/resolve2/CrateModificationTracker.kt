@@ -110,5 +110,5 @@ private fun isCrateChanged(crate: Crate, defMap: CrateDefMap, indicator: Progres
 // todo добавить в тест на buildDefMap проверку `missedFiles.isEmpty()`
 private fun CrateDefMap.hasAnyMissedFileCreated(): Boolean {
     val fileManager = VirtualFileManager.getInstance()
-    return missedFiles.any { fileManager.findFileByNioPath(it) != null }
+    return missedFiles.any { fileManager.findFileByNioPath(it) !== null }
 }

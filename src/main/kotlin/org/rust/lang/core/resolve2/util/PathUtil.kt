@@ -5,9 +5,11 @@
 
 package org.rust.lang.core.resolve2.util
 
-import org.rust.lang.core.stubs.RsPathStub
-import org.rust.lang.core.stubs.RsUseItemStub
-import org.rust.lang.core.stubs.RsUseSpeckStub
+import org.rust.lang.core.macros.MACRO_DOLLAR_CRATE_IDENTIFIER
+import org.rust.lang.core.resolve2.RESOLVE_DOLLAR_CRATE_ID_KEY
+import org.rust.lang.core.resolve2.RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY
+import org.rust.lang.core.resolve2.RESOLVE_LOG
+import org.rust.lang.core.stubs.*
 
 fun interface RsLeafUseSpeckConsumer {
     fun consume(usePath: Array<String>, alias: String?, isStarImport: Boolean)
@@ -59,5 +61,36 @@ private fun addPathSegments(path: RsPathStub, segments: ArrayList<String>) {
         //                 ~~~~~ this
         segments += ""
     }
-    segments += path.referenceName
+
+    val segment = path.referenceName
+    segments += segment
+    if (subpath === null && segment == MACRO_DOLLAR_CRATE_IDENTIFIER) {
+        val crateId = path.getUserData(RESOLVE_DOLLAR_CRATE_ID_KEY)
+        if (crateId !== null) {
+            segments += crateId.toString()
+        } else {
+            RESOLVE_LOG.error("Can't find crate for path starting with \$crate: '$path'")
+        }
+    }
+}
+
+fun RsMacroCallStub.getPathWithAdjustedDollarCrate(): Array<String> {
+    val segments = arrayListOf<String>()
+
+    val crateIdFromLocalInnerMacros = getUserData(RESOLVE_LOCAL_INNER_MACROS_CRATE_ID_KEY)
+    if (crateIdFromLocalInnerMacros !== null) {
+        segments += MACRO_DOLLAR_CRATE_IDENTIFIER
+        segments += crateIdFromLocalInnerMacros.toString()
+    }
+
+    addPathSegments(path, segments)
+    return segments.toTypedArray()
+}
+
+fun RsVisStub.getRestrictedPath(): Array<String> {
+    val path = visRestrictionPath ?: error("no visibility restriction")
+    val segments = arrayListOf<String>()
+    addPathSegments(path, segments)
+    if (segments.first().isEmpty()) segments.removeAt(0)
+    return segments.toTypedArray()
 }

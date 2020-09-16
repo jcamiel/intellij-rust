@@ -134,7 +134,7 @@ class CrateDefMap(
             val fileInfo = fileInfos[virtualFile.fileId]
             // todo если здесь возникнет exception, то RsBuildDefMapTest всё равно пройдёт
             // Note: we don't expand cfg-disabled macros (it can contain mod declaration)
-            testAssert { fileInfo != null || !mod.isDeeplyEnabledByCfg }
+            testAssert { fileInfo !== null || !mod.isDeeplyEnabledByCfg }
             return fileInfo?.modData
         }
         val parentMod = mod.`super` ?: return null
