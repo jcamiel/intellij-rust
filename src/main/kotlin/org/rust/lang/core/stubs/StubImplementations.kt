@@ -28,6 +28,9 @@ import org.rust.lang.core.parser.RustParser
 import org.rust.lang.core.parser.RustParserDefinition
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
+import org.rust.lang.core.psi.RsStubElementTypes.ENUM_BODY
+import org.rust.lang.core.psi.RsStubElementTypes.USE_GROUP
+import org.rust.lang.core.psi.RsStubElementTypes.VIS_RESTRICTION
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psi.impl.*
 import org.rust.lang.core.stubs.BlockMayHaveStubsHeuristic.computeAndCache
@@ -399,8 +402,8 @@ class RsUseSpeckStub(
         get() = findChildStubByType(RsPathStub.Type)
     val alias: RsAliasStub?
         get() = findChildStubByType(RsAliasStub.Type)
-    val useGroup: RsPlaceholderStub?
-        get() = findChildStubByType(USE_GROUP as IStubElementType<RsPlaceholderStub, *>)
+    val useGroup: StubElement<RsUseGroup>?
+        get() = findChildStubByType(USE_GROUP)
 
     object Type : RsStubElementType<RsUseSpeckStub, RsUseSpeck>("USE_SPECK") {
 
@@ -481,7 +484,7 @@ class RsEnumItemStub(
 
     val variants: List<RsEnumVariantStub>
         get() {
-            val enumBody = findChildStubByType(ENUM_BODY as IStubElementType<*, *>) ?: return emptyList()
+            val enumBody = findChildStubByType(ENUM_BODY) ?: return emptyList()
             return enumBody.childrenStubs.filterIsInstance<RsEnumVariantStub>()
         }
 
@@ -1823,7 +1826,7 @@ class RsVisStub(
 ) : StubBase<RsVis>(parent, elementType) {
 
     val visRestrictionPath: RsPathStub? get() {
-        val visRestriction = findChildStubByType(VIS_RESTRICTION as IStubElementType<RsPlaceholderStub, *>)
+        val visRestriction = findChildStubByType(VIS_RESTRICTION)
         return visRestriction?.findChildStubByType(RsPathStub.Type)
     }
 

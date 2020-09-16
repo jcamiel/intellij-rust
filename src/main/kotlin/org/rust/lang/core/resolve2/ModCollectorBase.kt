@@ -6,13 +6,11 @@
 package org.rust.lang.core.resolve2
 
 import com.intellij.psi.PsiElement
-import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.stubs.StubElement
 import com.intellij.util.io.IOUtil
 import org.rust.lang.core.crate.Crate
-import org.rust.lang.core.psi.RsElementTypes.INCLUDE_MACRO_ARGUMENT
 import org.rust.lang.core.psi.RsForeignModItem
-import org.rust.lang.core.psi.RsIncludeMacroArgument
+import org.rust.lang.core.psi.RsStubElementTypes.INCLUDE_MACRO_ARGUMENT
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.namespaces
@@ -126,10 +124,8 @@ class ModCollectorBase private constructor(
 
     private fun collectMacroCall(call: RsMacroCallStub) {
         fun RsMacroCallStub.getIncludeMacroArgument(): String? {
-            // todo как-нибудь покрасивее??
-            val includeMacroArgument = findChildStubByType(INCLUDE_MACRO_ARGUMENT as IStubElementType<*, *>)
-                ?: return null
-            return (includeMacroArgument.psi as RsIncludeMacroArgument).expr?.getValue(crate)
+            val includeMacroArgument = findChildStubByType(INCLUDE_MACRO_ARGUMENT) ?: return null
+            return includeMacroArgument.psi.expr?.getValue(crate)
         }
 
         val isCallDeeplyEnabledByCfg = isDeeplyEnabledByCfg && call.isEnabledByCfgSelf(crate)
