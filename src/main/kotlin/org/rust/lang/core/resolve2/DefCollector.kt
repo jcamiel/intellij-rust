@@ -333,10 +333,10 @@ class DefCollector(
         }
         val defData = RsMacroDataWithHash(RsMacroData(def.body), def.bodyHash)
         val callData = RsMacroCallDataWithHash(RsMacroCallData(call.body), call.bodyHash)
-        val (expandedText, expandedFile, ranges) =
+        val (expandedFile, expansion) =
             macroExpanderShared.createExpansionStub(project, macroExpander, defData, callData) ?: return true
 
-        processDollarCrate(call, def, expandedText, ranges, expandedFile)
+        processDollarCrate(call, def, expandedFile, expansion)
 
         // Note: we don't need to call [RsExpandedElement.setContext] for [expansion.elements],
         // because it is needed only for [RsModDeclItem], and we use our own resolve for [RsModDeclItem]
@@ -348,7 +348,7 @@ class DefCollector(
     /**
      * Алгоритм: В [MacroDefInfo] и [MacroCallInfo] поддерживаем мапку из позиции в тексте
      * (на которой начинается IntellijRustDollarCrate) в CrateId.
-     * Когда раскрываем macro call, хотим в полученном [expandedText]
+     * Когда раскрываем macro call, хотим в полученном `expansion.text`
      * для каждого вхождения IntellijRustDollarCrate найти CrateId.
      * Возможны три варианта, откуда пришёл IntellijRustDollarCrate:
      *   - $crate из самого макроса (macro_rules) - знаем нужный crateId
@@ -358,13 +358,13 @@ class DefCollector(
     private fun processDollarCrate(
         call: MacroCallInfo,
         def: MacroDefInfo,
-        expandedText: CharSequence,
-        ranges: RangeMap,  // between `call.body` and `expandedText`
-        file: RsFileStub
+        file: RsFileStub,
+        expansion: ExpansionResult
     ) {
-        val rangesInFile = findCrateIdForEachDollarCrate(expandedText, ranges, call, def)
+        val rangesInFile = findCrateIdForEachDollarCrate(expansion, call, def)
         if (rangesInFile.isEmpty() && !def.hasLocalInnerMacros) return
 
+        val ranges = expansion.ranges  // between `call.body` and `expandedText`
         // todo оптимизация: mapOffsetFromExpansionToCallBody работает за линию, мб можно за log
         file.forEachTopLevelElement { element ->
             if (rangesInFile.isNotEmpty()) {
@@ -384,33 +384,36 @@ class DefCollector(
 
     /**
      * Entry `(index, crateId)` in returning map means that
-     * [expandedText] starting from `index` contains [MACRO_DOLLAR_CRATE_IDENTIFIER] which corresponds to `crateId`
+     * `expansion.text` starting from `index` contains [MACRO_DOLLAR_CRATE_IDENTIFIER] which corresponds to `crateId`
      */
     private fun findCrateIdForEachDollarCrate(
-        expandedText: CharSequence,
-        ranges: RangeMap,  // between `call.body` and `expandedText`
+        expansion: ExpansionResult,
         call: MacroCallInfo,
         def: MacroDefInfo
     ): Map<Int, CratePersistentId> {
-        val occurrencesInExpandedText = MACRO_DOLLAR_CRATE_IDENTIFIER_REGEX.findAll(expandedText).map { it.range.first }
-        return occurrencesInExpandedText.associateWith { indexInExpandedText ->
-            val indexInCallBody = ranges.mapOffsetFromExpansionToCallBody(indexInExpandedText)
-            val crateId: CratePersistentId = if (indexInCallBody !== null) {
-                testAssert {
-                    val fragmentInCallBody = call.body
-                        .subSequence(indexInCallBody, indexInCallBody + MACRO_DOLLAR_CRATE_IDENTIFIER.length)
-                    fragmentInCallBody == MACRO_DOLLAR_CRATE_IDENTIFIER
+        val ranges = expansion.ranges  // between `call.body` and `expandedText`
+        return expansion.dollarCrateOccurrences.asSequence()
+            .mapNotNull { indexInExpandedText ->
+                val indexInCallBody = ranges.mapOffsetFromExpansionToCallBody(indexInExpandedText)
+                val crateId: CratePersistentId = if (indexInCallBody !== null) {
+                    testAssert {
+                        val fragmentInCallBody = call.body
+                            .subSequence(indexInCallBody, indexInCallBody + MACRO_DOLLAR_CRATE_IDENTIFIER.length)
+                        fragmentInCallBody == MACRO_DOLLAR_CRATE_IDENTIFIER
+                    }
+                    call.dollarCrateMap.mapOffsetFromExpansionToCallBody(indexInCallBody)
+                        ?: run {
+                            RESOLVE_LOG.error("Unexpected macro expansion. Macro call: '$call', expansion: '${expansion.text}'")
+                            return@mapNotNull null
+                        }
+                } else {
+                    // TODO: Нужно использовать RangeMap между expandedText и телом макроса (macro_rules)
+                    //  в теле макроса может быть IntellijRustDollarCrate (а не только $crate)
+                    def.crate
                 }
-                call.dollarCrateMap.mapOffsetFromExpansionToCallBody(indexInCallBody)
-                // todo only log error
-                    ?: error("Unexpected macro expansion. Macro call: '$call', expansion: '$expandedText'")
-            } else {
-                // TODO: Нужно использовать RangeMap между expandedText и телом макроса (macro_rules)
-                //  в теле макроса может быть IntellijRustDollarCrate (а не только $crate)
-                def.crate
+                indexInExpandedText to crateId
             }
-            crateId
-        }
+            .toMap(hashMapOf())
     }
 
     // нас интересуют три типа RsExpandedElement:

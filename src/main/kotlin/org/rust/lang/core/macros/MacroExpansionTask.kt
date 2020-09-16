@@ -420,8 +420,8 @@ object ExpansionPipeline {
                 return nextStageFail(callHash, defHash)
             }
 
-            val expansionBytes = expansion.first.toString().toByteArray()
-            val ranges = expansion.second
+            val expansionBytes = expansion.text.toByteArray()
+            val ranges = expansion.ranges
 
             val expansionBytesHash = VfsInternals.calculateContentHash(expansionBytes).getLeading64bits()
 

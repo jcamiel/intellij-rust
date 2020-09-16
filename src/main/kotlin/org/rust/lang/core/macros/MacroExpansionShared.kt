@@ -28,6 +28,8 @@ import org.rust.lang.core.psi.ext.RsMod
 import org.rust.lang.core.psi.ext.bodyHash
 import org.rust.lang.core.stubs.RsFileStub
 import org.rust.stdext.HashCode
+import org.rust.stdext.readVarInt
+import org.rust.stdext.writeVarInt
 import java.io.DataInput
 import java.io.DataOutput
 import java.nio.file.Path
@@ -70,7 +72,7 @@ class MacroExpansionShared : Disposable {
         stubs.close()
     }
 
-    fun cachedExpand(expander: MacroExpander, def: RsMacro, call: RsMacroCall): Pair<CharSequence, RangeMap>? {
+    fun cachedExpand(expander: MacroExpander, def: RsMacro, call: RsMacroCall): ExpansionResult? {
         val defData = RsMacroDataWithHash(def)
         val callData = RsMacroCallDataWithHash(call)
         return cachedExpand(expander, defData, callData)
@@ -80,7 +82,7 @@ class MacroExpansionShared : Disposable {
         expander: MacroExpander,
         def: RsMacroDataWithHash,
         call: RsMacroCallDataWithHash
-    ): Pair<CharSequence, RangeMap>? {
+    ): ExpansionResult? {
         val hash = HashCode.mix(def.bodyHash ?: return null, call.bodyHash ?: return null)
         return cachedExpand(expander, def, call, hash)
     }
@@ -91,14 +93,15 @@ class MacroExpansionShared : Disposable {
         def: RsMacroDataWithHash,
         call: RsMacroCallDataWithHash,
         hash: HashCode
-    ): Pair<CharSequence, RangeMap>? {
+    ): ExpansionResult? {
         val cached: ExpansionResult? = expansions.get(hash)
         return if (cached == null) {
-            val result = expander.expandMacroAsText(def.data, call.data) ?: return null
-            expansions.put(hash, ExpansionResult(result.first.toString(), result.second))
+            val (text, ranges) = expander.expandMacroAsText(def.data, call.data) ?: return null
+            val result = ExpansionResult(text.toString(), ranges)
+            expansions.put(hash, result)
             result
         } else {
-            Pair(cached.text, cached.ranges)
+            cached
         }
     }
 
@@ -127,16 +130,16 @@ class MacroExpansionShared : Disposable {
         expander: MacroExpander,
         def: RsMacroDataWithHash,
         call: RsMacroCallDataWithHash
-    ): Triple<CharSequence, RsFileStub, RangeMap>? {
+    ): Pair<RsFileStub, ExpansionResult>? {
         val hash = HashCode.mix(def.bodyHash ?: return null, call.bodyHash ?: return null)
-        val (text, ranges) = cachedExpand(expander, def, call, hash) ?: return null
-        val file = ReadOnlyLightVirtualFile("macro.rs", RsLanguage, text).apply {
+        val result = cachedExpand(expander, def, call, hash) ?: return null
+        val file = ReadOnlyLightVirtualFile("macro.rs", RsLanguage, result.text).apply {
             charset = Charsets.UTF_8
         }
         val stub = cachedBuildStub(hash) {
-            FileContentImpl(file, text, file.modificationStamp).also { it.project = project }
+            FileContentImpl(file, result.text, file.modificationStamp).also { it.project = project }
         } ?: return null
-        return Triple(text, stub.stub as RsFileStub, ranges)
+        return Pair(stub.stub as RsFileStub, result)
     }
 
     companion object {
@@ -205,21 +208,44 @@ object HashCodeKeyDescriptor : KeyDescriptor<HashCode> {
     }
 }
 
-data class ExpansionResult(
+class ExpansionResult(
     val text: String,
-    val ranges: RangeMap
+    val ranges: RangeMap,
+    /** Optimization: occurrences of [MACRO_DOLLAR_CRATE_IDENTIFIER] */
+    val dollarCrateOccurrences: IntArray = MACRO_DOLLAR_CRATE_IDENTIFIER_REGEX.findAll(text)
+        .map { it.range.first }
+        .toList()
+        .toIntArray()
 )
 
 object ExpansionResultExternalizer : DataExternalizer<ExpansionResult> {
     override fun save(out: DataOutput, value: ExpansionResult) {
         IOUtil.writeUTF(out, value.text)
         value.ranges.writeTo(out)
+        out.writeIntArray(value.dollarCrateOccurrences)
     }
 
     override fun read(inp: DataInput): ExpansionResult {
         return ExpansionResult(
             IOUtil.readUTF(inp),
-            RangeMap.readFrom(inp)
+            RangeMap.readFrom(inp),
+            inp.readIntArray()
         )
     }
+}
+
+private fun DataOutput.writeIntArray(array: IntArray) {
+    writeInt(array.size)
+    for (element in array) {
+        writeVarInt(element)
+    }
+}
+
+private fun DataInput.readIntArray(): IntArray {
+    val size = readInt()
+    val array = IntArray(size)
+    for (i in 0 until size) {
+        array[i] = readVarInt()
+    }
+    return array
 }
