@@ -87,7 +87,7 @@ fun buildDefMapContainingExplicitItems(
     val crateRootData = ModData(
         parent = null,
         crate = crateId,
-        path = ModPath(crateId, emptyList()),
+        path = ModPath(crateId, emptyArray()),
         isDeeplyEnabledByCfg = true,
         fileId = crateRoot.virtualFile.fileId,
         fileRelativePath = "",

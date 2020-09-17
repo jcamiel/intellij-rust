@@ -11,7 +11,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.FileViewProvider
 import com.intellij.psi.PsiFile
-import com.intellij.util.io.IOUtil
+import com.intellij.util.containers.map2Array
 import org.rust.lang.core.crate.CratePersistentId
 import org.rust.lang.core.psi.RsEnumVariant
 import org.rust.lang.core.psi.RsFile
@@ -22,8 +22,6 @@ import org.rust.lang.core.resolve.Namespace
 import org.rust.openapiext.fileId
 import org.rust.openapiext.testAssert
 import org.rust.stdext.HashCode
-import java.io.DataInputStream
-import java.io.DataOutput
 import java.nio.file.Path
 
 class DefDatabase(
@@ -157,7 +155,7 @@ class CrateDefMap(
      * Import all exported macros from another crate.
      *
      * Exported macros are just all macros in the root module scope.
-     * Note that it contains not only all `#[macro_export]` macros, but also all aliases
+     * Note that it contains not only all ```#[macro_export]``` macros, but also all aliases
      * created by `use` in the root module, ignoring the visibility of `use`.
      */
     fun importAllMacrosExported(from: CrateDefMap) {
@@ -343,6 +341,8 @@ data class VisItem(
      * Full path to item, including its name.
      * Note: Can't store [containingMod] and [name] separately, because [VisItem] could be used for crate root
      */
+    // мб всё-таки хранить containingMod и name отдельно (name nullable)?
+    // todo измерить сколько ModPath занимают места
     val path: ModPath,
     val visibility: Visibility,
     val isModOrEnum: Boolean = false,
@@ -411,57 +411,51 @@ sealed class Visibility {
             Invisible -> "Invisible"
             CfgDisabled -> "CfgDisabled"
         }
-
-    fun writeTo(data: DataOutput, withCrate: Boolean) {
-        when (this) {
-            is Public -> data.writeByte(0)
-            is Restricted -> {
-                data.writeByte(1)
-                if (withCrate) inMod.path.writeTo(data, withCrate)
-            }
-            is Invisible -> data.writeByte(2)
-            is CfgDisabled -> data.writeByte(3)
-        }
-    }
 }
 
 /** Path to a module or an item in module */
-data class ModPath(
+class ModPath(
     val crate: CratePersistentId,
-    // todo оптимизация: хранить `path`, а `segments` считать на лету ?
-    val segments: List<String>,
+    val segments: Array<String>,
     // val fileId: FileId,  // id of containing file
     // val fileRelativePath: String  // empty for pathRsFile
 ) {
-    val path: String get() = segments.joinToString("::")
     val name: String get() = segments.last()
-    val parent: ModPath get() = ModPath(crate, segments.subList(0, segments.size - 1))
+    val parent: ModPath get() = ModPath(crate, segments.copyOfRange(0, segments.size - 1))
 
     fun append(segment: String): ModPath = ModPath(crate, segments + segment)
 
-    override fun toString(): String = path.ifEmpty { "crate" }
-
-    fun writeTo(data: DataOutput, withCrate: Boolean) {
-        if (withCrate) data.writeInt(crate)
-        IOUtil.writeUTF(data, path)
-    }
+    override fun toString(): String = segments.joinToString("::").ifEmpty { "crate" }
 
     /** `mod1::mod2` isSubPathOf `mod1::mod2::mod3` */
     fun isSubPathOf(other: ModPath): Boolean {
         if (crate != other.crate) return false
+
         if (segments.size > other.segments.size) return false
+        for (index in segments.indices) {
+            if (segments[index] != other.segments[index]) return false
+        }
+        return true
+
         // todo profile & optimize
-        return other.path.startsWith(path)
+        // return (segments zip other.segments).all { it.first == it.second }
     }
 
-    companion object {
-        fun readFrom(data: DataInputStream): ModPath = ModPath(data.readInt(), data.readUTF().split("::"))
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as ModPath
+        return crate == other.crate && segments.contentEquals(other.segments)
+    }
 
+    override fun hashCode(): Int = 31 * crate + segments.contentHashCode()
+
+    companion object {
         // todo remove ?
         fun fromMod(mod: RsMod, crate: CratePersistentId): ModPath? {
             val segments = mod.superMods
                 .asReversed().drop(1)
-                .map { it.modName ?: return null }
+                .map2Array { it.modName ?: return null }
             return ModPath(crate, segments)
         }
     }
