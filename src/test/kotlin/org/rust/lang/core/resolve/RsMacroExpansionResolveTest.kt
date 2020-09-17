@@ -433,6 +433,26 @@ class RsMacroExpansionResolveTest : RsResolveTestBase() {
     """)
 
     @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test 'crate' metavar with alias (macro expanded to import with group)`() = stubOnlyResolve("""
+    //- lib.rs
+        pub fn func() {}
+             //X
+        #[macro_export]
+        macro_rules! foo {
+            () => { use $ crate::{func}; }
+        }
+    //- main.rs
+        #[macro_use]
+        extern crate test_package as package;
+
+        foo!();
+
+        fn main() {
+            func();
+        } //^ lib.rs
+    """)
+
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
     fun `test 'crate' metavar with macro call not in crate root`() = stubOnlyResolve("""
     //- lib.rs
         pub struct Foo;

@@ -507,11 +507,11 @@ private fun StubElement<*>.forEachTopLevelElement(action: (StubElement<*>) -> Un
 }
 
 private fun RsUseSpeckStub.forEachTopLevelPath(consumer: (RsPathStub) -> Unit) {
-    val useGroup = useGroup
-    if (useGroup === null) {
-        val path = path ?: return
+    val path = path
+    if (path !== null) {
         consumer(path)
     } else {
+        val useGroup = useGroup ?: return
         for (speck in useGroup.childrenStubs) {
             (speck as RsUseSpeckStub).forEachTopLevelPath(consumer)
         }

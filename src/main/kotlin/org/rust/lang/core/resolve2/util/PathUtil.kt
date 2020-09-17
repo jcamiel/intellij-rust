@@ -69,7 +69,7 @@ private fun addPathSegments(path: RsPathStub, segments: ArrayList<String>) {
         if (crateId !== null) {
             segments += crateId.toString()
         } else {
-            RESOLVE_LOG.error("Can't find crate for path starting with \$crate: '$path'")
+            RESOLVE_LOG.error("Can't find crate for path starting with \$crate")
         }
     }
 }
