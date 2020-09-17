@@ -8,6 +8,7 @@ package org.rustPerformanceTests
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.RecursionManager
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.util.PsiModificationTracker
 import org.apache.commons.lang3.ObjectUtils
 import org.rust.lang.core.macros.MacroExpansionScope
@@ -30,17 +31,17 @@ class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
 
     private val cargoFilePath: String = "src/cargo/core/resolver/mod.rs"
     fun `test Cargo, measure`() = repeatTest(CARGO, cargoFilePath, ::measureResolveAndHighlight)
-    fun `test Cargo, profile build DefMap`() = repeatBuildDefMaps(CARGO)
-    fun `test Cargo, profile resolve`() = repeatTest(CARGO, cargoFilePath, ::profileResolve)
+    fun `test Cargo, profile build DefMap`() = profileBuildDefMaps(CARGO)
+    fun `test Cargo, profile resolve`() = profileResolve(CARGO, cargoFilePath)
 
     private val mysqlAsyncFilePath1: String = "src/conn/mod.rs"
     private val mysqlAsyncFilePath2: String = "src/connection_like/mod.rs"
     fun `test mysql_async, measure 1`() = repeatTest(MYSQL_ASYNC, mysqlAsyncFilePath1, ::measureResolveAndHighlight)
     fun `test mysql_async, measure 2`() = repeatTest(MYSQL_ASYNC, mysqlAsyncFilePath2, ::measureResolveAndHighlight)
-    fun `test mysql_async, profile resolve`() = repeatBuildDefMaps(MYSQL_ASYNC)
+    fun `test mysql_async, profile resolve`() = profileBuildDefMaps(MYSQL_ASYNC)
 
-    fun `test empty, profile build DefMap`() = repeatBuildDefMaps(EMPTY)
-    fun `test rustc, profile build DefMap`() = repeatBuildDefMaps(RUSTC)
+    fun `test empty, profile build DefMap`() = profileBuildDefMaps(EMPTY)
+    fun `test rustc, profile build DefMap`() = profileBuildDefMaps(RUSTC)
 
     private fun repeatTest(info: RealProjectInfo, filePath: String, f: (Timings) -> Unit) {
         println("${name.removePrefix("test ")}:")
@@ -55,6 +56,12 @@ class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
         }
     }
 
+    private fun openProject(info: RealProjectInfo): VirtualFile? {
+        println("${name.removePrefix("test ")}:")
+        project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(MacroExpansionScope.ALL, name)
+        return openRealProject(info)
+    }
+
     private fun measureResolveAndHighlight(timings: Timings) {
         val modificationCount = currentPsiModificationCount()
         buildDefMaps(timings)
@@ -64,33 +71,23 @@ class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
         resolveReferencesCached(references, modificationCount, timings)
     }
 
-    private fun repeatBuildDefMaps(info: RealProjectInfo) {
-        println("${name.removePrefix("test ")}:")
-        project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(MacroExpansionScope.ALL, name)
-        openRealProject(info) ?: return
-
-        repeatBenchmark(warmupIterations = 20, iterations = 10000) {
-            it.measure("buildDefMap") {
-                val pool = Executors.newWorkStealingPool()
-                val indicator = EmptyProgressIndicator()
-                forceBuildDefMapForAllCrates(project, pool, indicator, async = false)
-            }
+    private fun profileBuildDefMaps(info: RealProjectInfo) {
+        openProject(info) ?: return
+        profile("buildDefMap") {
+            val pool = Executors.newWorkStealingPool()
+            val indicator = EmptyProgressIndicator()
+            forceBuildDefMapForAllCrates(project, pool, indicator, async = false)
         }
     }
 
-    private fun profileResolve(timings: Timings) {
-        val references = collectReferences(timings)
-        val times = mutableListOf<Long>()
-        for (i in 0..Int.MAX_VALUE) {
-            val time = measureTimeMillis {
-                references.forEach { it.reference?.resolve() }
-            }
-            times += time
+    private fun profileResolve(info: RealProjectInfo, filePath: String) {
+        openProject(info) ?: return
+        myFixture.configureFromTempProjectFile(filePath)
 
-            val timeMin = times.min()
-            val timeMedian = ObjectUtils.median(*times.toTypedArray())
-            println("Resolved all file references in $time ms  (min = $timeMin ms, median = $timeMedian ms)")
+        val references = myFixture.file.descendantsOfType<RsReferenceElement>()
+        profile("Resolved all file references") {
             project.rustPsiManager.incRustStructureModificationCount()
+            references.forEach { it.reference?.resolve() }
         }
     }
 
@@ -146,5 +143,20 @@ class RsHighlightingPerformanceTest : RsRealProjectTestBase() {
     override fun tearDown() {
         super.tearDown()
         Disposer.dispose(lastDisposable)
+    }
+}
+
+private fun profile(label: String, action: () -> Unit) {
+    val times = mutableListOf<Long>()
+    for (i in 0..Int.MAX_VALUE) {
+        val time = measureTimeMillis {
+            action()
+        }
+        times += time
+
+        val timeMin = times.min()
+        val timeMedian = ObjectUtils.median(*times.toTypedArray())
+        val iteration = "#${i + 1}".padStart(5)
+        println("$iteration: $label in $time ms  (min = $timeMin ms, median = $timeMedian ms)")
     }
 }

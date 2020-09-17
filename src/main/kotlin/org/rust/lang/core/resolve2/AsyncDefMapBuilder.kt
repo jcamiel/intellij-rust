@@ -14,7 +14,7 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.system.measureTimeMillis
 
-private const val PRINT_TIME_STATISTICS: Boolean = true
+private const val PRINT_TIME_STATISTICS: Boolean = false
 
 class AsyncDefMapBuilder(
     private val defMapService: DefMapService,

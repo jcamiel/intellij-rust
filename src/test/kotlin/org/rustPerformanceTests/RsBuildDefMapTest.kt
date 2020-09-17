@@ -12,7 +12,7 @@ import org.rust.lang.core.macros.macroExpansionManager
 class RsBuildDefMapTest : RsRealProjectTestBase() {
 
     /** Don't run it on Rustc! It's a kind of stress-test */
-    fun `test build rustc`() = doTest(RUSTC)
+    // fun `test build rustc`() = doTest(RUSTC)
 
     fun `test build empty`() = doTest(EMPTY)
     fun `test build Cargo`() = doTest(CARGO)
